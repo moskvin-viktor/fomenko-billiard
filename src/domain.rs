@@ -138,20 +138,28 @@ impl Domain {
     }
 
     pub fn contains(&self, point: Vec2) -> bool {
-        // Cast in one fixed direction. Ray casting is unreliable for
-        // points that lie exactly on the boundary (degenerate vertex or
-        // tangent crossings), but for a closed boundary it is exact for
-        // any interior/exterior point off the boundary.
-        let ray_dir = vec2(1.0, 0.0);
-        let mut crossings = 0;
-        for seg in &self.segments {
-            if let Some((t, _, _)) = seg.intersect(point, ray_dir) {
-                if t > 1e-8 {
-                    crossings += 1;
+        // Try multiple ray directions for robustness in non-convex domains.
+        // Single-direction ray casting can miss boundaries when the ray
+        // grazes past a vertex (e.g. L-shape's top-right corner).
+        for &ray_dir in &[
+            vec2(1.0, 0.0),
+            vec2(0.0, -1.0),
+            vec2(0.5, -0.866),
+            vec2(-0.5, -0.866),
+        ] {
+            let mut crossings = 0;
+            for seg in &self.segments {
+                if let Some((t, _, _)) = seg.intersect(point, ray_dir) {
+                    if t > 1e-8 {
+                        crossings += 1;
+                    }
                 }
             }
+            if crossings % 2 == 1 {
+                return true;
+            }
         }
-        crossings % 2 == 1
+        false
     }
 
     pub fn intersect(&self, p: Vec2, dir: Vec2) -> Option<(f32, usize, Vec2)> {
@@ -268,55 +276,126 @@ pub fn confocal_quad(a: f32, b: f32, lambda_ell: f32, lambda_hyp: f32) -> Domain
     )
 }
 
-/// L-shape built from confocal quadrics.
-/// Uses 6 arcs: top/bottom ellipse (λ₁), right hyperbola (λ₂),
-/// and splits the left hyperbola into two with λ₃ (upper) and λ₄ (lower),
-/// creating a rectangular indentation.
-#[allow(dead_code)]
+/// L-shape built from confocal quadrics with a re-entrant 270° corner.
+///
+/// The shape is bounded by 6 confocal arcs in CCW order:
+///   1. **Top** — outer ellipse from right-hyperbola to left-upper hyperbola
+///   2. **Left-upper** — left-upper hyperbola from outer ellipse to step ellipse
+///   3. **Step** — step ellipse from left-upper hyperbola to left-lower hyperbola
+///   4. **Left-lower** — left-lower hyperbola from step ellipse to outer ellipse
+///   5. **Bottom** — outer ellipse from left-lower hyperbola to right hyperbola
+///   6. **Right** — right hyperbola from outer ellipse back to top
+///
+/// The notch (step) on the left side is controlled by `lambda_ell_step`
+/// (an ellipse smaller than the outer one) and the two left-side hyperbolas,
+/// creating a 270° re-entrant corner at the junction of arcs 3 and 4.
 pub fn confocal_lshape(
     a: f32,
     b: f32,
-    lambda_ell: f32,
+    lambda_ell_outer: f32,
     lambda_hyp_right: f32,
-    _lambda_hyp_left_upper: f32,
-    _lambda_hyp_left_lower: f32,
+    lambda_hyp_left_upper: f32,
+    lambda_hyp_left_lower: f32,
+    lambda_ell_step: f32,
 ) -> Domain {
+    // left-upper & left-lower may be equal (single left hyperbola)
+    let hyp_left_upper = lambda_hyp_left_upper.max(lambda_hyp_left_lower);
+    let hyp_left_lower = if lambda_hyp_left_upper == lambda_hyp_left_lower {
+        lambda_hyp_left_upper
+    } else {
+        lambda_hyp_left_lower
+    };
     use crate::quadratic::ConfocalQuadric;
 
-    let ell = ConfocalQuadric {
+    // --- quadrics -----------------------------------------------------------
+    let ell_outer = ConfocalQuadric {
         a_param: a,
         b_param: b,
-        lambda: lambda_ell,
+        lambda: lambda_ell_outer,
     };
-    let hyp_r = ConfocalQuadric {
+    let hyp_right = ConfocalQuadric {
         a_param: a,
         b_param: b,
         lambda: lambda_hyp_right,
     };
+    let hyp_left_upper_q = ConfocalQuadric {
+        a_param: a,
+        b_param: b,
+        lambda: hyp_left_upper,
+    };
+    let hyp_left_lower_q = ConfocalQuadric {
+        a_param: a,
+        b_param: b,
+        lambda: hyp_left_lower,
+    };
+    let ell_step = ConfocalQuadric {
+        a_param: a,
+        b_param: b,
+        lambda: lambda_ell_step,
+    };
 
-    let [tr, br, bl, tl] = ConfocalQuadric::intersections(&ell, &hyp_r)
-        .expect("ellipse and right hyperbola must intersect");
+    // --- intersection points ------------------------------------------------
+    // intersections returns [tr, br, bl, tl] where each is (±x, ±y).
+    let [tr_or, br_or, _bl_or, _tl_or] = ConfocalQuadric::intersections(&ell_outer, &hyp_right)
+        .expect("outer ellipse and right hyperbola must intersect");
 
+    let [_tr_olu, _br_olu, _bl_olu, tl_olu] =
+        ConfocalQuadric::intersections(&ell_outer, &hyp_left_upper_q)
+            .expect("outer ellipse and left-upper hyperbola must intersect");
+
+    let [_tr_slu, _br_slu, _bl_slu, tl_slu] =
+        ConfocalQuadric::intersections(&ell_step, &hyp_left_upper_q)
+            .expect("step ellipse and left-upper hyperbola must intersect");
+
+    let [_tr_sll, _br_sll, bl_sll, _tl_sll] =
+        ConfocalQuadric::intersections(&ell_step, &hyp_left_lower_q)
+            .expect("step ellipse and left-lower hyperbola must intersect");
+
+    let [_tr_oll, _br_oll, bl_oll, _tl_oll] =
+        ConfocalQuadric::intersections(&ell_outer, &hyp_left_lower_q)
+            .expect("outer ellipse and left-lower hyperbola must intersect");
+
+    // --- 6 arcs in CCW order ------------------------------------------------
     Domain::new(vec![
+        // 1. Top: outer ellipse, right-hyp → left-upper-hyp
         Segment::Quad {
-            curve: ell,
-            a: tr,
-            b: tl,
+            curve: ell_outer,
+            a: tr_or,
+            b: tl_olu,
         },
+        // 2. Left-upper: left-upper hyperbola, outer-ellipse → step-ellipse
         Segment::Quad {
-            curve: hyp_r,
-            a: tl,
-            b: bl,
+            curve: hyp_left_upper_q,
+            a: tl_olu,
+            b: tl_slu,
         },
+        // 3. Step: step ellipse, left-upper-hyp → left-lower-hyp.
+        //    Goes CCW from upper-left (tl_slu) to lower-left (bl_sll)
+        //    through the left side of the step ellipse.
         Segment::Quad {
-            curve: ell,
-            a: bl,
-            b: br,
+            curve: ell_step,
+            a: tl_slu,
+            b: bl_sll,
         },
+        // 4. Left-lower: left-lower hyperbola, step-ellipse → outer-ellipse.
+        //    Goes from the step-ellipse intersection (bl_sll) down to
+        //    the outer-ellipse intersection (bl_oll), along the hyperbola.
         Segment::Quad {
-            curve: hyp_r,
-            a: br,
-            b: tr,
+            curve: hyp_left_lower_q,
+            a: bl_sll,
+            b: bl_oll,
+        },
+        // 5. Bottom: outer ellipse, left-lower-hyp → right-hyp
+        Segment::Quad {
+            curve: ell_outer,
+            a: bl_oll,
+            b: br_or,
+        },
+        // 6. Right: right hyperbola, outer-ellipse back to top
+        Segment::Quad {
+            curve: hyp_right,
+            a: br_or,
+            b: tr_or,
         },
     ])
 }

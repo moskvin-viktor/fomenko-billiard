@@ -8,6 +8,32 @@ pub const B: f32 = 1.0;
 
 use macroquad::prelude::*;
 
+/// Pick start points for a given domain at a given value of the second integral.
+///
+/// For confocal billiards (`is_confocal = true`), `lam` is the caustic parameter Λ.
+/// We sample the caustic curve Q_Λ = 0 and pick one point in each connected
+/// component of caustic ∩ domain.
+///
+/// For polyline billiards (`is_confocal = false`), `lam` is the normalised angle
+/// θ/π ∈ [-1, 1], and `center` is a fixed interior point.  We return a single
+/// trajectory start at `center` with velocity direction `θ = lam·π`.
+pub fn get_start_points(
+    a: f32,
+    b: f32,
+    lam: f32,
+    domain: &domain::Domain,
+    is_confocal: bool,
+    center: Vec2,
+) -> Vec<(Vec2, Vec2)> {
+    if is_confocal {
+        start_points_on_caustic(a, b, lam, domain)
+    } else {
+        let angle = lam * std::f32::consts::PI; // lam is θ/π ∈ [-1, 1]
+        let v = vec2(angle.cos(), angle.sin());
+        vec![(center, v)]
+    }
+}
+
 /// Pick start points on the caustic inside the domain.
 /// Returns one (position, velocity) for each connected component of
 /// caustic ∩ domain. Ellipse caustics can have up to 4 components
@@ -30,9 +56,10 @@ pub fn start_points_on_caustic(
     // are robustly interior, so thin lens-shaped slivers that merely
     // touch the boundary don't become spurious components.
     let bounds = confocal_bounds(domain);
-    // Slack for component detection: keep only robustly-interior samples
-    // so borderline lens slivers don't become spurious components.
-    let slack = 0.03;
+    // Slack for component detection: keep only robustly-interior samples.
+    // For non-quadrilaterals (L-shapes), use larger slack since ray casting
+    // can be unreliable near the complex boundary.
+    let slack = if bounds.is_some() { 0.03 } else { 0.06 };
     let inside: Vec<bool> = pts
         .iter()
         .map(|&p| match bounds {
@@ -100,11 +127,16 @@ pub fn start_points_on_caustic(
 }
 
 /// Extract (λ_ellipse, λ_hyperbola) of a confocal-quadrilateral domain.
+/// Returns `None` for non-quadrilaterals (e.g. L-shapes with 6 arcs)
+/// since the simple ellipse/hyperbola test is only valid for quadrilaterals.
 fn confocal_bounds(domain: &domain::Domain) -> Option<(f32, f32)> {
+    // Count quadric segments — must be exactly 4 for the simple test to be valid
     let mut ell = None;
     let mut hyp = None;
+    let mut quad_count = 0;
     for seg in &domain.segments {
         if let domain::Segment::Quad { curve, .. } = seg {
+            quad_count += 1;
             if curve.lambda < curve.b_param {
                 ell = Some(curve.lambda);
             } else if curve.lambda < curve.a_param {
@@ -113,7 +145,7 @@ fn confocal_bounds(domain: &domain::Domain) -> Option<(f32, f32)> {
         }
     }
     match (ell, hyp) {
-        (Some(e), Some(h)) => Some((e, h)),
+        (Some(e), Some(h)) if quad_count == 4 => Some((e, h)),
         _ => None,
     }
 }
@@ -123,12 +155,21 @@ fn confocal_bounds(domain: &domain::Domain) -> Option<(f32, f32)> {
 /// sheets. `slack` shrinks the region slightly inward, so borderline
 /// slivers that merely touch the boundary are excluded.
 fn confocal_inside(a: f32, b: f32, p: Vec2, lambda_ell: f32, lambda_hyp: f32, slack: f32) -> bool {
+    // Ellipse: Q_λ_ell(p) < 0 means inside.  slack shrinks inward.
     let e_val = (b - lambda_ell) * p.x * p.x + (a - lambda_ell) * p.y * p.y
         - (a - lambda_ell) * (b - lambda_ell);
     let inside_ell = e_val < -slack;
-    // Inside the strip between the hyperbola sheets, with slack.
-    let between_hyp = p.x.abs() < (a - lambda_hyp).sqrt() - slack;
-    inside_ell && between_hyp
+    if !inside_ell {
+        return false;
+    }
+
+    // Hyperbola: Q_λ_hyp(p) > 0 means between the two branches (inside).
+    // For λ > B, the hyperbola opens left/right.  Q > 0 is the region
+    // between the left and right sheets, which is the interior of the domain.
+    let h_val = (b - lambda_hyp) * p.x * p.x + (a - lambda_hyp) * p.y * p.y
+        - (a - lambda_hyp) * (b - lambda_hyp);
+    let between_hyp = h_val > slack;
+    between_hyp
 }
 
 /// Newton-project a point onto the quadric Q(x,y) = 0 along its gradient.

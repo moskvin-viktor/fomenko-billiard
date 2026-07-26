@@ -1,9 +1,9 @@
-use billiards::{domain, phase3d, presets, quadratic, start_points_on_caustic, A, B};
+use billiards::{domain, phase3d, presets, quadratic, A, B};
 use macroquad::prelude::*;
 use std::cmp::Ordering;
 
 // ----------------------------------------------------------------
-// Camera
+// Camera (2D)
 // ----------------------------------------------------------------
 struct Camera {
     centre: Vec2,
@@ -68,7 +68,6 @@ impl CachedDomain {
         let corners = domain.corners();
         let camera = Camera::fit_domain(&boundary_pts);
 
-        // Compute domain extent for 3D view scaling
         let mut max_r = 0.0f32;
         for p in &boundary_pts {
             max_r = max_r.max(p.x.abs().max(p.y.abs()));
@@ -85,7 +84,7 @@ impl CachedDomain {
 }
 
 // ----------------------------------------------------------------
-// Drawing
+// Drawing helpers
 // ----------------------------------------------------------------
 const BG: Color = color_u8!(15, 15, 35, 255);
 const BOUNDARY: Color = color_u8!(180, 220, 255, 200);
@@ -149,8 +148,7 @@ fn draw_start_marker(pos: Vec2, cam: &Camera, w: f32, h: f32) {
     draw_circle(s.x, s.y, 3.5, YELLOW);
 }
 
-/// Draw the degenerate caustic reference lines (focal segment at λ = B
-/// and vertical segment at λ = A), plus the current caustic curve.
+/// Draw caustic curves and degenerate reference lines (for confocal domains).
 fn draw_caustic(a: f32, b: f32, lam: f32, domain: &domain::Domain, cam: &Camera, w: f32, h: f32) {
     // Draw degenerate caustic at λ = B: segment between foci (±c, 0)
     let c = (a - b).sqrt();
@@ -182,30 +180,131 @@ fn draw_caustic(a: f32, b: f32, lam: f32, domain: &domain::Domain, cam: &Camera,
     }
 }
 
-/// Extract confocal boundary parameters from a domain.
-fn get_boundary_lambdas(domain: &domain::Domain) -> (f32, f32) {
+/// Draw a starting direction arrow for polyline domains.
+fn draw_start_arrow(center: Vec2, angle: f32, cam: &Camera, w: f32, h: f32) {
+    let dir = vec2(angle.cos(), angle.sin());
+    let tip = center + dir * 0.3;
+    let s1 = cam.world_to_screen(center, w, h);
+    let s2 = cam.world_to_screen(tip, w, h);
+    draw_line(s1.x, s1.y, s2.x, s2.y, 2.5, YELLOW);
+    draw_circle(s1.x, s1.y, 3.5, YELLOW);
+}
+
+// ----------------------------------------------------------------
+// Second-integral slider range
+// ----------------------------------------------------------------
+
+/// Describes the valid range for the second-integral slider.
+enum SecondIntegralRange {
+    /// Confocal caustic parameter Λ.
+    Confocal {
+        ell_min: f32,
+        ell_max: f32,
+        hyp_min: f32,
+        #[allow(dead_code)]
+        hyp_max: f32,
+        total_range: f32,
+    },
+    /// Polyline angle θ/π ∈ [-1, 1].
+    Angle,
+}
+
+impl SecondIntegralRange {
+    fn for_domain(domain: &domain::Domain, is_confocal: bool) -> Self {
+        if !is_confocal {
+            return Self::Angle;
+        }
+        let e = 0.02;
+        let (lambda_ell, lambda_hyp) = get_ell_hyp(domain);
+        let ell_min = lambda_ell + e;
+        let ell_max = B - e;
+        let hyp_min = lambda_hyp + e;
+        let hyp_max = A - e;
+        let ell_range = (ell_max - ell_min).max(0.0);
+        let hyp_range = (hyp_max - hyp_min).max(0.0);
+        let total_range = ell_range + hyp_range;
+        Self::Confocal {
+            ell_min,
+            ell_max,
+            hyp_min,
+            hyp_max,
+            total_range,
+        }
+    }
+
+    /// Map slider fraction t ∈ [0, 1] to the second integral value.
+    fn to_value(&self, t: f32) -> f32 {
+        match self {
+            Self::Angle => -1.0 + 2.0 * t.clamp(0.0, 1.0),
+            Self::Confocal {
+                ell_min,
+                ell_max,
+                hyp_min,
+                total_range,
+                ..
+            } => {
+                if *total_range <= 0.0 {
+                    return 0.0;
+                }
+                let ell_range = ell_max - ell_min;
+                let t = t.clamp(0.0, 1.0);
+                let pos = t * total_range;
+                if pos <= ell_range {
+                    ell_min + pos
+                } else {
+                    hyp_min + (pos - ell_range)
+                }
+            }
+        }
+    }
+
+    /// Map a second integral value to slider fraction t ∈ [0, 1].
+    fn from_value(&self, lam: f32) -> f32 {
+        match self {
+            Self::Angle => (lam.clamp(-1.0, 1.0) + 1.0) / 2.0,
+            Self::Confocal {
+                ell_min,
+                ell_max,
+                hyp_min,
+                total_range,
+                ..
+            } => {
+                if *total_range <= 0.0 {
+                    return 0.0;
+                }
+                let ell_range = ell_max - ell_min;
+                if lam <= *ell_max {
+                    (lam - ell_min) / total_range
+                } else if lam >= *hyp_min {
+                    (ell_range + (lam - hyp_min)) / total_range
+                } else {
+                    ell_range / total_range
+                }
+            }
+        }
+    }
+}
+
+/// Extract (λ_ell, λ_hyp) boundary lambdas from a confocal domain.
+fn get_ell_hyp(domain: &domain::Domain) -> (f32, f32) {
     let mut ell = -A + 1.0;
     let mut hyp = B + 1.0;
     for seg in &domain.segments {
         if let domain::Segment::Quad { curve, .. } = seg {
             if curve.lambda < B {
-                ell = curve.lambda;
+                ell = ell.min(curve.lambda);
             }
             if curve.lambda > B {
-                hyp = curve.lambda;
+                hyp = hyp.max(curve.lambda);
             }
         }
     }
     (ell, hyp)
 }
 
-/// Clamp Λ to the valid range, jumping over the gap between ellipse and
-/// hyperbola ranges. Uses `prev` to determine direction when crossing.
-///
-/// Ellipse caustic: λ_ell < Λ < B  (inside boundary ellipse)
-/// Hyperbola caustic: λ_hyp < Λ < A (inside boundary hyperbola)
+/// Clamp Λ to the valid range, jumping over the gap.
 fn clamp_lambda(lam: f32, prev: f32, domain: &domain::Domain) -> f32 {
-    let (lambda_ell, lambda_hyp) = get_boundary_lambdas(domain);
+    let (lambda_ell, lambda_hyp) = get_ell_hyp(domain);
     let e = 0.02;
     let ell_max = B - e;
     let hyp_min = lambda_hyp + e;
@@ -213,9 +312,6 @@ fn clamp_lambda(lam: f32, prev: f32, domain: &domain::Domain) -> f32 {
     let range_max = A - e;
 
     let clamped = lam.clamp(range_min, range_max);
-
-    // If clamped lands in the gap between ellipse and hyperbola ranges,
-    // jump to the appropriate side based on travel direction.
     if clamped > ell_max && clamped < hyp_min {
         match lam.partial_cmp(&prev).unwrap_or(Ordering::Equal) {
             Ordering::Greater => hyp_min,
@@ -223,68 +319,6 @@ fn clamp_lambda(lam: f32, prev: f32, domain: &domain::Domain) -> f32 {
         }
     } else {
         clamped
-    }
-}
-
-/// Slider range info for a given domain.
-struct SliderRange {
-    ell_min: f32,
-    ell_max: f32,
-    hyp_min: f32,
-    #[allow(dead_code)]
-    hyp_max: f32,
-    total_range: f32,
-}
-
-impl SliderRange {
-    fn new(domain: &domain::Domain) -> Self {
-        let (lambda_ell, lambda_hyp) = get_boundary_lambdas(domain);
-        let e = 0.02;
-        let ell_min = lambda_ell + e;
-        let ell_max = B - e;
-        let hyp_min = lambda_hyp + e;
-        let _hyp_max = A - e;
-        let ell_range = (ell_max - ell_min).max(0.0);
-        let hyp_range = (_hyp_max - hyp_min).max(0.0);
-        let total_range = ell_range + hyp_range;
-        Self {
-            ell_min,
-            ell_max,
-            hyp_min,
-            hyp_max: _hyp_max,
-            total_range,
-        }
-    }
-
-    /// Map slider fraction t ∈ [0, 1] to lambda, skipping the gap.
-    fn to_lambda(&self, t: f32) -> f32 {
-        if self.total_range <= 0.0 {
-            return 0.0;
-        }
-        let ell_range = self.ell_max - self.ell_min;
-        let t = t.clamp(0.0, 1.0);
-        let pos = t * self.total_range;
-        if pos <= ell_range {
-            self.ell_min + pos
-        } else {
-            self.hyp_min + (pos - ell_range)
-        }
-    }
-
-    /// Map lambda to slider fraction t ∈ [0, 1].
-    fn from_lambda(&self, lam: f32) -> f32 {
-        if self.total_range <= 0.0 {
-            return 0.0;
-        }
-        let ell_range = self.ell_max - self.ell_min;
-        if lam <= self.ell_max {
-            (lam - self.ell_min) / self.total_range
-        } else if lam >= self.hyp_min {
-            (ell_range + (lam - self.hyp_min)) / self.total_range
-        } else {
-            // In the gap — map to the nearest edge (ellipse end)
-            ell_range / self.total_range
-        }
     }
 }
 
@@ -308,14 +342,12 @@ impl Slider {
         }
     }
 
-    /// Draw the slider and handle mouse interaction.
-    /// Returns the new lambda value if the slider moved.
-    fn update(&mut self, lambda: f32, range: &SliderRange) -> Option<f32> {
+    fn update(&mut self, value: f32, range: &SecondIntegralRange, label: &str) -> Option<f32> {
         let track_h = 4.0;
         let thumb_r = 8.0;
         let cy = self.y + track_h / 2.0;
 
-        // Draw track (background)
+        // Track background
         draw_rectangle(
             self.x,
             self.y,
@@ -324,8 +356,8 @@ impl Slider {
             color_u8!(60, 60, 100, 180),
         );
 
-        // Draw filled portion
-        let t = range.from_lambda(lambda);
+        // Filled portion
+        let t = range.from_value(value);
         let fill_w = t * self.width;
         if fill_w > 0.0 {
             draw_rectangle(
@@ -337,19 +369,41 @@ impl Slider {
             );
         }
 
-        // Draw thumb
+        // Thumb
         let thumb_x = self.x + t * self.width;
         draw_circle(thumb_x, cy, thumb_r, color_u8!(220, 220, 255, 255));
         draw_circle_lines(thumb_x, cy, thumb_r, 1.5, color_u8!(100, 100, 160, 200));
 
-        // Draw gap indicator (a small break in the track)
-        if range.ell_max < range.hyp_min {
-            let gap_t = range.from_lambda(range.ell_max);
-            let gap_x = self.x + gap_t * self.width;
-            draw_line(gap_x, self.y - 2.0, gap_x, self.y + track_h + 2.0, 2.0, BG);
+        // Gap indicator (confocal-only)
+        if let SecondIntegralRange::Confocal {
+            ell_max, hyp_min, ..
+        } = range
+        {
+            if ell_max < hyp_min {
+                let gap_t = range.from_value(*ell_max);
+                let gap_x = self.x + gap_t * self.width;
+                draw_line(gap_x, self.y - 2.0, gap_x, self.y + track_h + 2.0, 2.0, BG);
+            }
         }
 
-        // Handle mouse interaction
+        // Label and value text
+        let value_text = match range {
+            SecondIntegralRange::Angle => format!("{:.3}", value),
+            SecondIntegralRange::Confocal { .. } => {
+                let caustic_type = if value < B { "ellipse" } else { "hyperbola" };
+                format!("{:.3} ({})", value, caustic_type)
+            }
+        };
+        let info = format!("{} = {}", label, value_text);
+        draw_text(
+            &info,
+            self.x - 60.0,
+            self.y + track_h + 22.0,
+            14.0,
+            color_u8!(180, 180, 210, 200),
+        );
+
+        // Mouse interaction
         let mx = mouse_position().0;
         let my = mouse_position().1;
 
@@ -365,7 +419,7 @@ impl Slider {
         if self.dragging {
             if is_mouse_button_down(MouseButton::Left) {
                 let t = ((mx - self.x) / self.width).clamp(0.0, 1.0);
-                return Some(range.to_lambda(t));
+                return Some(range.to_value(t));
             } else {
                 self.dragging = false;
             }
@@ -387,53 +441,54 @@ async fn main() {
         .collect();
 
     let mut idx = 0usize;
-    let mut lambda: f32 = 0.2;
+    let mut second_int: f32 = 0.2; // Λ for confocal, θ/π for polyline
     let mut slider = Slider::new();
     let mut show_3d = false;
     let mut cam3d = phase3d::OrbitCamera3::new();
     let mut phase_trajectories: Vec<Vec<phase3d::PhasePoint>> = Vec::new();
 
-    let trace_all = |domain: &domain::Domain, lam: f32| -> Vec<Vec<(Vec2, Vec2)>> {
-        let starts = start_points_on_caustic(A, B, lam, domain);
-        starts
+    let build_trajectories = |domain: &domain::Domain, lam: f32, preset: &presets::Preset| {
+        let starts =
+            billiards::get_start_points(A, B, lam, domain, preset.is_confocal, preset.start_center);
+        let trajs: Vec<Vec<(Vec2, Vec2)>> = starts
             .iter()
             .map(|(p, v)| domain.trace(*p, *v, 300))
-            .collect()
+            .collect();
+        (starts, trajs)
     };
 
-    let mut trajectories = trace_all(&configs[idx].domain, lambda);
-    let mut start_points = start_points_on_caustic(A, B, lambda, &configs[idx].domain);
+    let (mut start_points, mut trajectories) =
+        build_trajectories(&configs[idx].domain, second_int, &configs[idx]);
 
     loop {
         let (w, h) = (screen_width(), screen_height());
         let cache = &caches[idx];
         let cam = &cache.camera;
+        let preset = &configs[idx];
 
-        // Position the slider
+        // Position slider
         slider.x = w * 0.15;
         slider.y = h - 50.0;
         slider.width = w * 0.7;
 
-        // Build slider range for the current domain
-        let slider_range = SliderRange::new(&configs[idx].domain);
+        let slider_range = SecondIntegralRange::for_domain(&preset.domain, preset.is_confocal);
 
-        // Toggle 3D phase space view
+        // Toggle 3D
         if is_key_pressed(KeyCode::P) {
             show_3d = !show_3d;
             if show_3d {
-                // Build phase space trajectories
-                let starts = start_points_on_caustic(A, B, lambda, &configs[idx].domain);
                 phase_trajectories =
-                    phase3d::sample_all_trajectories_phase(&configs[idx].domain, &starts, 300);
+                    phase3d::sample_all_trajectories_phase(&preset.domain, &start_points, 300);
             }
         }
 
-        // Keyboard input
+        // Tab / Space: next preset
         if is_key_pressed(KeyCode::Tab) || is_key_pressed(KeyCode::Space) {
             idx = (idx + 1) % configs.len();
-            lambda = 0.2;
-            trajectories = trace_all(&configs[idx].domain, lambda);
-            start_points = start_points_on_caustic(A, B, lambda, &configs[idx].domain);
+            second_int = 0.2;
+            let (s, t) = build_trajectories(&configs[idx].domain, second_int, &configs[idx]);
+            start_points = s;
+            trajectories = t;
             if show_3d {
                 phase_trajectories = phase3d::sample_all_trajectories_phase(
                     &configs[idx].domain,
@@ -443,39 +498,74 @@ async fn main() {
             }
         }
 
-        if is_key_pressed(KeyCode::Up) || is_key_pressed(KeyCode::Right) {
-            let next = clamp_lambda(lambda + 0.05, lambda, &configs[idx].domain);
-            lambda = next;
-            trajectories = trace_all(&configs[idx].domain, lambda);
-            start_points = start_points_on_caustic(A, B, lambda, &configs[idx].domain);
-            if show_3d {
-                phase_trajectories = phase3d::sample_all_trajectories_phase(
-                    &configs[idx].domain,
-                    &start_points,
-                    300,
-                );
+        // Keyboard: adjust second integral
+        if configs[idx].is_confocal {
+            if is_key_pressed(KeyCode::Up) || is_key_pressed(KeyCode::Right) {
+                let next = clamp_lambda(second_int + 0.05, second_int, &configs[idx].domain);
+                second_int = next;
+                let (s, t) = build_trajectories(&configs[idx].domain, second_int, &configs[idx]);
+                start_points = s;
+                trajectories = t;
+                if show_3d {
+                    phase_trajectories = phase3d::sample_all_trajectories_phase(
+                        &configs[idx].domain,
+                        &start_points,
+                        300,
+                    );
+                }
             }
-        }
-        if is_key_pressed(KeyCode::Down) || is_key_pressed(KeyCode::Left) {
-            let next = clamp_lambda(lambda - 0.05, lambda, &configs[idx].domain);
-            lambda = next;
-            trajectories = trace_all(&configs[idx].domain, lambda);
-            start_points = start_points_on_caustic(A, B, lambda, &configs[idx].domain);
-            if show_3d {
-                phase_trajectories = phase3d::sample_all_trajectories_phase(
-                    &configs[idx].domain,
-                    &start_points,
-                    300,
-                );
+            if is_key_pressed(KeyCode::Down) || is_key_pressed(KeyCode::Left) {
+                let next = clamp_lambda(second_int - 0.05, second_int, &configs[idx].domain);
+                second_int = next;
+                let (s, t) = build_trajectories(&configs[idx].domain, second_int, &configs[idx]);
+                start_points = s;
+                trajectories = t;
+                if show_3d {
+                    phase_trajectories = phase3d::sample_all_trajectories_phase(
+                        &configs[idx].domain,
+                        &start_points,
+                        300,
+                    );
+                }
+            }
+        } else {
+            if is_key_pressed(KeyCode::Up) || is_key_pressed(KeyCode::Right) {
+                second_int = (second_int + 0.05).clamp(-1.0, 1.0);
+                let (s, t) = build_trajectories(&configs[idx].domain, second_int, &configs[idx]);
+                start_points = s;
+                trajectories = t;
+                if show_3d {
+                    phase_trajectories = phase3d::sample_all_trajectories_phase(
+                        &configs[idx].domain,
+                        &start_points,
+                        300,
+                    );
+                }
+            }
+            if is_key_pressed(KeyCode::Down) || is_key_pressed(KeyCode::Left) {
+                second_int = (second_int - 0.05).clamp(-1.0, 1.0);
+                let (s, t) = build_trajectories(&configs[idx].domain, second_int, &configs[idx]);
+                start_points = s;
+                trajectories = t;
+                if show_3d {
+                    phase_trajectories = phase3d::sample_all_trajectories_phase(
+                        &configs[idx].domain,
+                        &start_points,
+                        300,
+                    );
+                }
             }
         }
 
         // Slider input
-        if let Some(new_lam) = slider.update(lambda, &slider_range) {
-            if (new_lam - lambda).abs() > 0.0001 {
-                lambda = new_lam;
-                trajectories = trace_all(&configs[idx].domain, lambda);
-                start_points = start_points_on_caustic(A, B, lambda, &configs[idx].domain);
+        if let Some(new_val) =
+            slider.update(second_int, &slider_range, preset.second_integral_label)
+        {
+            if (new_val - second_int).abs() > 0.0001 {
+                second_int = new_val;
+                let (s, t) = build_trajectories(&configs[idx].domain, second_int, &configs[idx]);
+                start_points = s;
+                trajectories = t;
                 if show_3d {
                     phase_trajectories = phase3d::sample_all_trajectories_phase(
                         &configs[idx].domain,
@@ -491,11 +581,7 @@ async fn main() {
         if show_3d {
             // ---- 3D phase space view ----
             cam3d.handle_input();
-
-            // Draw axes and grid
             phase3d::draw_axes(&cam3d, w, h, cache.domain_extent);
-
-            // Draw phase trajectories
             phase3d::draw_phase_trajectories(
                 &phase_trajectories,
                 &cam3d,
@@ -504,17 +590,16 @@ async fn main() {
                 cache.domain_extent,
             );
 
-            // HUD
-            let caustic_type = if lambda < B { "ellipse" } else { "hyperbola" };
-            let info =
-                format!(
-                "{}  |  Λ = {:.3} ({})  |  {} trajs  |  [P] 2D  |  [Tab] next  |  right-drag orbit",
-                configs[idx].label, lambda, caustic_type, start_points.len(),
+            let info = format!(
+                "{}  |  {} = {:.3}  |  {} trajs  |  [P] 2D  |  right-drag orbit",
+                preset.label,
+                preset.second_integral_label,
+                second_int,
+                start_points.len(),
             );
             draw_text(&info, 12.0, 28.0, 18.0, color_u8!(200, 200, 220, 220));
-
             draw_text(
-                "3D phase space: (x, y, θ/π)  —  Liouville torus at fixed Λ",
+                "3D phase space: (x, y, θ/π)  —  Liouville torus at fixed second integral",
                 12.0,
                 h - 12.0,
                 14.0,
@@ -523,7 +608,14 @@ async fn main() {
         } else {
             // ---- 2D billiard view ----
             draw_boundary(cache, w, h);
-            draw_caustic(A, B, lambda, &configs[idx].domain, cam, w, h);
+
+            if preset.is_confocal {
+                draw_caustic(A, B, second_int, &preset.domain, cam, w, h);
+            } else {
+                // Draw the starting direction arrow
+                let angle = second_int * std::f32::consts::PI;
+                draw_start_arrow(preset.start_center, angle, cam, w, h);
+            }
 
             for traj in &trajectories {
                 draw_trajectory(traj, cam, w, h);
@@ -532,25 +624,31 @@ async fn main() {
                 draw_start_marker(p, cam, w, h);
             }
 
-            let caustic_type = if lambda < B { "ellipse" } else { "hyperbola" };
             let total: usize = trajectories.iter().map(|t| t.len()).sum();
-            let info = format!(
-                "{}  |  Λ = {:.3} ({})  |  {} trajs, {} bounces  |  ↑↓ Λ  |  [P] 3D  |  Tab next",
-                configs[idx].label,
-                lambda,
-                caustic_type,
-                start_points.len(),
-                total,
+            let info =
+                format!(
+                "{}  |  {} = {:.3}  |  {} trajs, {} bounces  |  ↑↓ adjust  |  [P] 3D  |  Tab next",
+                preset.label, preset.second_integral_label, second_int, start_points.len(), total,
             );
             draw_text(&info, 12.0, 28.0, 18.0, color_u8!(200, 200, 220, 220));
 
-            draw_text(
-                "H = ½|v|²  |  Λ = vx²/a + vy²/b − (x·vy − y·vx)²/(ab)  |  v ⟂ ∇Q_Λ",
-                12.0,
-                h - 12.0,
-                14.0,
-                color_u8!(150, 150, 170, 140),
-            );
+            if preset.is_confocal {
+                draw_text(
+                    "H = ½|v|²  |  Λ = vx²/a + vy²/b − (x·vy − y·vx)²/(ab)  |  v ⟂ ∇Q_Λ",
+                    12.0,
+                    h - 12.0,
+                    14.0,
+                    color_u8!(150, 150, 170, 140),
+                );
+            } else {
+                draw_text(
+                    "H = ½|v|²  |  second integral = velocity angle θ = atan2(vy, vx)",
+                    12.0,
+                    h - 12.0,
+                    14.0,
+                    color_u8!(150, 150, 170, 140),
+                );
+            }
         }
 
         next_frame().await;
