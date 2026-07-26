@@ -138,6 +138,10 @@ impl Domain {
     }
 
     pub fn contains(&self, point: Vec2) -> bool {
+        // Cast in one fixed direction. Ray casting is unreliable for
+        // points that lie exactly on the boundary (degenerate vertex or
+        // tangent crossings), but for a closed boundary it is exact for
+        // any interior/exterior point off the boundary.
         let ray_dir = vec2(1.0, 0.0);
         let mut crossings = 0;
         for seg in &self.segments {

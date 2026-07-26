@@ -1,11 +1,15 @@
-use billiards::domain;
-use billiards::quadratic::ConfocalQuadric;
+use billiards::{domain, presets, start_points_on_caustic};
 use macroquad::prelude::*;
 
 const A: f32 = 4.0;
 const B: f32 = 1.0;
 
 /// Check if a point is inside a confocal quadrilateral analytically.
+///
+/// Mirrors the library's classification (`confocal_inside` with zero
+/// slack): inside the boundary ellipse and between the hyperbola sheets.
+/// This is the ground truth the library uses, so the test asserts
+/// exactly the property the start-point picker guarantees.
 fn point_inside(p: Vec2, domain: &domain::Domain) -> bool {
     let (mut lambda_ell, mut lambda_hyp) = (f32::MAX, f32::MAX);
     let (mut aa, mut bb) = (0.0, 0.0);
@@ -32,13 +36,30 @@ fn point_inside(p: Vec2, domain: &domain::Domain) -> bool {
 }
 
 fn test_start_point_inside(a: f32, b: f32, lam: f32, domain: &domain::Domain) {
-    let starts = crate::start_points_on_caustic(a, b, lam, domain);
+    let starts = start_points_on_caustic(a, b, lam, domain);
     for (i, &(p, _)) in starts.iter().enumerate() {
         assert!(
             point_inside(p, domain),
             "Start point {} for Λ={} is outside! pos=({}, {})",
             i,
             lam,
+            p.x,
+            p.y
+        );
+    }
+}
+
+/// Start points must lie (numerically) on the caustic curve Q_Λ = 0.
+fn test_start_point_on_caustic(a: f32, b: f32, lam: f32, domain: &domain::Domain) {
+    let starts = start_points_on_caustic(a, b, lam, domain);
+    for (i, &(p, _)) in starts.iter().enumerate() {
+        let q = billiards::quadratic::confocal(a, b, lam).eval(p);
+        assert!(
+            q.abs() < 1e-3,
+            "Start point {} for Λ={} is off the caustic! Q={} pos=({}, {})",
+            i,
+            lam,
+            q,
             p.x,
             p.y
         );
@@ -78,18 +99,22 @@ fn test_all_lambda_values() {
         let mut lam = ell_min;
         while lam < ell_max {
             test_start_point_inside(A, B, lam, domain);
+            test_start_point_on_caustic(A, B, lam, domain);
             lam += eps;
         }
         test_start_point_inside(A, B, ell_max, domain);
+        test_start_point_on_caustic(A, B, ell_max, domain);
 
         let hyp_min = lambda_hyp + e;
         let hyp_max = A - e;
         let mut lam = hyp_min;
         while lam < hyp_max {
             test_start_point_inside(A, B, lam, domain);
+            test_start_point_on_caustic(A, B, lam, domain);
             lam += eps;
         }
         test_start_point_inside(A, B, hyp_max, domain);
+        test_start_point_on_caustic(A, B, hyp_max, domain);
     }
 
     eprintln!("All tests passed!");
