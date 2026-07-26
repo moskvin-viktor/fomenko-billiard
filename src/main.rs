@@ -1,4 +1,4 @@
-use billiards::{domain, presets, quadratic, start_points_on_caustic, A, B};
+use billiards::{domain, phase3d, presets, quadratic, start_points_on_caustic, A, B};
 use macroquad::prelude::*;
 use std::cmp::Ordering;
 
@@ -59,6 +59,7 @@ struct CachedDomain {
     boundary_pts: Vec<Vec2>,
     corners: Vec<Vec2>,
     camera: Camera,
+    domain_extent: f32,
 }
 
 impl CachedDomain {
@@ -66,10 +67,19 @@ impl CachedDomain {
         let boundary_pts = domain.sample_boundary(30);
         let corners = domain.corners();
         let camera = Camera::fit_domain(&boundary_pts);
+
+        // Compute domain extent for 3D view scaling
+        let mut max_r = 0.0f32;
+        for p in &boundary_pts {
+            max_r = max_r.max(p.x.abs().max(p.y.abs()));
+        }
+        let domain_extent = max_r.max(0.5);
+
         Self {
             boundary_pts,
             corners,
             camera,
+            domain_extent,
         }
     }
 }
@@ -379,6 +389,9 @@ async fn main() {
     let mut idx = 0usize;
     let mut lambda: f32 = 0.2;
     let mut slider = Slider::new();
+    let mut show_3d = false;
+    let mut cam3d = phase3d::OrbitCamera3::new();
+    let mut phase_trajectories: Vec<Vec<phase3d::PhasePoint>> = Vec::new();
 
     let trace_all = |domain: &domain::Domain, lam: f32| -> Vec<Vec<(Vec2, Vec2)>> {
         let starts = start_points_on_caustic(A, B, lam, domain);
@@ -404,12 +417,30 @@ async fn main() {
         // Build slider range for the current domain
         let slider_range = SliderRange::new(&configs[idx].domain);
 
+        // Toggle 3D phase space view
+        if is_key_pressed(KeyCode::P) {
+            show_3d = !show_3d;
+            if show_3d {
+                // Build phase space trajectories
+                let starts = start_points_on_caustic(A, B, lambda, &configs[idx].domain);
+                phase_trajectories =
+                    phase3d::sample_all_trajectories_phase(&configs[idx].domain, &starts, 300);
+            }
+        }
+
         // Keyboard input
         if is_key_pressed(KeyCode::Tab) || is_key_pressed(KeyCode::Space) {
             idx = (idx + 1) % configs.len();
             lambda = 0.2;
             trajectories = trace_all(&configs[idx].domain, lambda);
             start_points = start_points_on_caustic(A, B, lambda, &configs[idx].domain);
+            if show_3d {
+                phase_trajectories = phase3d::sample_all_trajectories_phase(
+                    &configs[idx].domain,
+                    &start_points,
+                    300,
+                );
+            }
         }
 
         if is_key_pressed(KeyCode::Up) || is_key_pressed(KeyCode::Right) {
@@ -417,54 +448,110 @@ async fn main() {
             lambda = next;
             trajectories = trace_all(&configs[idx].domain, lambda);
             start_points = start_points_on_caustic(A, B, lambda, &configs[idx].domain);
+            if show_3d {
+                phase_trajectories = phase3d::sample_all_trajectories_phase(
+                    &configs[idx].domain,
+                    &start_points,
+                    300,
+                );
+            }
         }
         if is_key_pressed(KeyCode::Down) || is_key_pressed(KeyCode::Left) {
             let next = clamp_lambda(lambda - 0.05, lambda, &configs[idx].domain);
             lambda = next;
             trajectories = trace_all(&configs[idx].domain, lambda);
             start_points = start_points_on_caustic(A, B, lambda, &configs[idx].domain);
+            if show_3d {
+                phase_trajectories = phase3d::sample_all_trajectories_phase(
+                    &configs[idx].domain,
+                    &start_points,
+                    300,
+                );
+            }
         }
 
-        clear_background(BG);
-
-        draw_boundary(cache, w, h);
-        draw_caustic(A, B, lambda, &configs[idx].domain, cam, w, h);
-
-        for traj in &trajectories {
-            draw_trajectory(traj, cam, w, h);
-        }
-        for &(p, _) in &start_points {
-            draw_start_marker(p, cam, w, h);
-        }
-
-        // Slider input (draw + handle mouse)
+        // Slider input
         if let Some(new_lam) = slider.update(lambda, &slider_range) {
             if (new_lam - lambda).abs() > 0.0001 {
                 lambda = new_lam;
                 trajectories = trace_all(&configs[idx].domain, lambda);
                 start_points = start_points_on_caustic(A, B, lambda, &configs[idx].domain);
+                if show_3d {
+                    phase_trajectories = phase3d::sample_all_trajectories_phase(
+                        &configs[idx].domain,
+                        &start_points,
+                        300,
+                    );
+                }
             }
         }
 
-        let caustic_type = if lambda < B { "ellipse" } else { "hyperbola" };
-        let total: usize = trajectories.iter().map(|t| t.len()).sum();
-        let info = format!(
-            "{}  |  Λ = {:.3} ({})  |  {} trajs, {} bounces  |  ↑↓ Λ  |  Tab next",
-            configs[idx].label,
-            lambda,
-            caustic_type,
-            start_points.len(),
-            total,
-        );
-        draw_text(&info, 12.0, 28.0, 18.0, color_u8!(200, 200, 220, 220));
+        clear_background(BG);
 
-        draw_text(
-            "H = ½|v|²  |  Λ = vx²/a + vy²/b − (x·vy − y·vx)²/(ab)  |  v ⟂ ∇Q_Λ",
-            12.0,
-            h - 12.0,
-            14.0,
-            color_u8!(150, 150, 170, 140),
-        );
+        if show_3d {
+            // ---- 3D phase space view ----
+            cam3d.handle_input();
+
+            // Draw axes and grid
+            phase3d::draw_axes(&cam3d, w, h, cache.domain_extent);
+
+            // Draw phase trajectories
+            phase3d::draw_phase_trajectories(
+                &phase_trajectories,
+                &cam3d,
+                w,
+                h,
+                cache.domain_extent,
+            );
+
+            // HUD
+            let caustic_type = if lambda < B { "ellipse" } else { "hyperbola" };
+            let info =
+                format!(
+                "{}  |  Λ = {:.3} ({})  |  {} trajs  |  [P] 2D  |  [Tab] next  |  right-drag orbit",
+                configs[idx].label, lambda, caustic_type, start_points.len(),
+            );
+            draw_text(&info, 12.0, 28.0, 18.0, color_u8!(200, 200, 220, 220));
+
+            draw_text(
+                "3D phase space: (x, y, θ/π)  —  Liouville torus at fixed Λ",
+                12.0,
+                h - 12.0,
+                14.0,
+                color_u8!(150, 150, 170, 140),
+            );
+        } else {
+            // ---- 2D billiard view ----
+            draw_boundary(cache, w, h);
+            draw_caustic(A, B, lambda, &configs[idx].domain, cam, w, h);
+
+            for traj in &trajectories {
+                draw_trajectory(traj, cam, w, h);
+            }
+            for &(p, _) in &start_points {
+                draw_start_marker(p, cam, w, h);
+            }
+
+            let caustic_type = if lambda < B { "ellipse" } else { "hyperbola" };
+            let total: usize = trajectories.iter().map(|t| t.len()).sum();
+            let info = format!(
+                "{}  |  Λ = {:.3} ({})  |  {} trajs, {} bounces  |  ↑↓ Λ  |  [P] 3D  |  Tab next",
+                configs[idx].label,
+                lambda,
+                caustic_type,
+                start_points.len(),
+                total,
+            );
+            draw_text(&info, 12.0, 28.0, 18.0, color_u8!(200, 200, 220, 220));
+
+            draw_text(
+                "H = ½|v|²  |  Λ = vx²/a + vy²/b − (x·vy − y·vx)²/(ab)  |  v ⟂ ∇Q_Λ",
+                12.0,
+                h - 12.0,
+                14.0,
+                color_u8!(150, 150, 170, 140),
+            );
+        }
 
         next_frame().await;
     }

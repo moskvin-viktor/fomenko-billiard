@@ -1,4 +1,5 @@
 pub mod domain;
+pub mod phase3d;
 pub mod presets;
 pub mod quadratic;
 
