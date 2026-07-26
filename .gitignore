@@ -2,8 +2,7 @@
 /target/
 **/*.rs.bk
 
-# Cargo.lock is not committed for libraries (commit for binaries)
-# Cargo.lock
+# Cargo.lock is committed for binary projects
 
 # IDE / editor
 .vscode/
