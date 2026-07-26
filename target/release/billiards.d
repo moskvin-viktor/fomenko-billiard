@@ -1,1 +1,0 @@
-/home/gincampari/Documents/repos/billiards/target/release/billiards: /home/gincampari/Documents/repos/billiards/src/domain.rs /home/gincampari/Documents/repos/billiards/src/main.rs /home/gincampari/Documents/repos/billiards/src/presets.rs /home/gincampari/Documents/repos/billiards/src/quadratic.rs
