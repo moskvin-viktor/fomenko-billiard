@@ -1,12 +1,14 @@
 mod domain;
 mod presets;
+mod quadratic;
 
-use domain::Domain;
+use crate::domain::Domain;
 use macroquad::prelude::*;
 use presets::Preset;
+use std::cell::RefCell;
 
 // ----------------------------------------------------------------
-// Coordinate helpers – auto-fit any domain in the window
+// Camera – recompute only when the domain changes
 // ----------------------------------------------------------------
 struct Camera {
     centre: Vec2,
@@ -14,32 +16,40 @@ struct Camera {
 }
 
 impl Camera {
-    fn fit_domain(domain: &Domain) -> Self {
-        let pts = domain.sample_boundary(40);
+    fn fit_domain(pts: &[Vec2]) -> Self {
         if pts.is_empty() {
             return Self {
                 centre: vec2(0.0, 0.0),
                 half_height: 2.0,
             };
         }
-        let min_x = pts.iter().map(|p| p.x).reduce(f32::min).unwrap_or(-1.0);
-        let max_x = pts.iter().map(|p| p.x).reduce(f32::max).unwrap_or(1.0);
-        let min_y = pts.iter().map(|p| p.y).reduce(f32::min).unwrap_or(-1.0);
-        let max_y = pts.iter().map(|p| p.y).reduce(f32::max).unwrap_or(1.0);
-
+        let (mut min_x, mut max_x) = (f32::MAX, f32::MIN);
+        let (mut min_y, mut max_y) = (f32::MAX, f32::MIN);
+        for p in pts {
+            if p.x < min_x {
+                min_x = p.x;
+            }
+            if p.x > max_x {
+                max_x = p.x;
+            }
+            if p.y < min_y {
+                min_y = p.y;
+            }
+            if p.y > max_y {
+                max_y = p.y;
+            }
+        }
         let cx = (min_x + max_x) / 2.0;
         let cy = (min_y + max_y) / 2.0;
         let hw = (max_x - min_x) / 2.0;
         let hh = (max_y - min_y) / 2.0;
-
-        // Add 20% padding
-        let half = hh.max(hw) * 1.2;
         Self {
             centre: vec2(cx, cy),
-            half_height: half.max(0.5),
+            half_height: hh.max(hw).max(0.5) * 1.2,
         }
     }
 
+    #[inline(always)]
     fn world_to_screen(&self, p: Vec2, win_w: f32, win_h: f32) -> Vec2 {
         let aspect = win_w / win_h;
         let sx = ((p.x - self.centre.x) / (self.half_height * aspect) + 1.0) * 0.5 * win_w;
@@ -47,11 +57,34 @@ impl Camera {
         vec2(sx, sy)
     }
 
+    #[inline(always)]
     fn screen_to_world(&self, pos: Vec2, win_w: f32, win_h: f32) -> Vec2 {
         let aspect = win_w / win_h;
         let wx = (pos.x / win_w - 0.5) * 2.0 * self.half_height * aspect + self.centre.x;
         let wy = -(pos.y / win_h - 0.5) * 2.0 * self.half_height + self.centre.y;
         vec2(wx, wy)
+    }
+}
+
+// ----------------------------------------------------------------
+// Pre-computed boundary geometry for a domain
+// ----------------------------------------------------------------
+struct CachedDomain {
+    boundary_pts: Vec<Vec2>, // world-space points for drawing
+    corners: Vec<Vec2>,
+    camera: Camera,
+}
+
+impl CachedDomain {
+    fn new(domain: &Domain) -> Self {
+        let boundary_pts = domain.sample_boundary(30);
+        let corners = domain.corners();
+        let camera = Camera::fit_domain(&boundary_pts);
+        Self {
+            boundary_pts,
+            corners,
+            camera,
+        }
     }
 }
 
@@ -62,21 +95,31 @@ const BG: Color = color_u8!(15, 15, 35, 255);
 const BOUNDARY: Color = color_u8!(180, 220, 255, 200);
 const CORNER: Color = color_u8!(255, 200, 100, 200);
 
-fn draw_boundary(domain: &Domain, cam: &Camera, w: f32, h: f32) {
-    let pts = domain.sample_boundary(30);
-    let sp: Vec<Vec2> = pts.iter().map(|p| cam.world_to_screen(*p, w, h)).collect();
-
-    if sp.is_empty() {
-        return;
+fn draw_boundary(cache: &CachedDomain, cam: &Camera, w: f32, h: f32) {
+    // Convert boundary points to screen once, reuse a scratch buffer
+    thread_local! {
+        static SCRATCH: RefCell<Vec<Vec2>> = const { RefCell::new(Vec::new()) };
     }
 
-    for i in 0..sp.len() {
-        let j = (i + 1) % sp.len();
-        draw_line(sp[i].x, sp[i].y, sp[j].x, sp[j].y, 2.0, BOUNDARY);
-    }
+    SCRATCH.with(|scratch| {
+        let mut sp = scratch.borrow_mut();
+        sp.clear();
+        sp.extend(
+            cache
+                .boundary_pts
+                .iter()
+                .map(|p| cam.world_to_screen(*p, w, h)),
+        );
 
-    // Mark corners
-    for c in domain.corners() {
+        for i in 0..sp.len() {
+            let j = (i + 1) % sp.len();
+            let a = sp[i];
+            let b = sp[j];
+            draw_line(a.x, a.y, b.x, b.y, 2.0, BOUNDARY);
+        }
+    });
+
+    for &c in &cache.corners {
         let s = cam.world_to_screen(c, w, h);
         draw_circle(s.x, s.y, 4.0, CORNER);
     }
@@ -84,15 +127,28 @@ fn draw_boundary(domain: &Domain, cam: &Camera, w: f32, h: f32) {
 
 fn draw_trajectory(segs: &[(Vec2, Vec2)], cam: &Camera, w: f32, h: f32) {
     let n = segs.len();
-    for (i, (a, b)) in segs.iter().enumerate() {
-        let t = i as f32 / n.max(1) as f32;
+    if n == 0 {
+        return;
+    }
+
+    // Pre‑compute colours – same number of segments as before
+    // We'll draw in two passes: first lines, then circles
+    // (fewer draw calls = faster in macroquad)
+    for (i, &(a, b)) in segs.iter().enumerate() {
+        let t = i as f32 / n as f32;
         let hue = 30.0 + t * 200.0;
         let color = hsl_to_rgb(hue, 0.85, 0.55);
 
-        let sa = cam.world_to_screen(*a, w, h);
-        let sb = cam.world_to_screen(*b, w, h);
+        let sa = cam.world_to_screen(a, w, h);
+        let sb = cam.world_to_screen(b, w, h);
 
         draw_line(sa.x, sa.y, sb.x, sb.y, 1.8, color);
+    }
+
+    for (i, &(_, b)) in segs.iter().enumerate() {
+        let t = i as f32 / n as f32;
+        let hue = 30.0 + t * 200.0;
+        let sb = cam.world_to_screen(b, w, h);
         draw_circle(sb.x, sb.y, 2.5 + (1.0 - t) * 2.0, hsl_to_rgb(hue, 0.8, 0.7));
     }
 }
@@ -157,6 +213,13 @@ async fn main() {
     let mut custom_pos: Option<Vec2> = None;
     let mut custom_vel: Option<Vec2> = None;
 
+    // Pre‑cache boundary geometry for all domains
+    let caches: Vec<CachedDomain> = configs
+        .iter()
+        .map(|p| CachedDomain::new(&p.domain))
+        .collect();
+
+    // Recompute trace for a preset
     let trace = |p: &Preset| -> (Vec<(Vec2, Vec2)>, bool) {
         let segs = p.domain.trace(p.start, p.vel, 300);
         let ok = !segs.is_empty();
@@ -167,7 +230,8 @@ async fn main() {
 
     loop {
         let (w, h) = (screen_width(), screen_height());
-        let cam = Camera::fit_domain(&configs[idx].domain);
+        let cache = &caches[idx];
+        let cam = &cache.camera;
 
         // ---- Input ----
         if is_key_pressed(KeyCode::Tab) || is_key_pressed(KeyCode::Space) {
@@ -199,14 +263,14 @@ async fn main() {
         let start = custom_pos.unwrap_or(configs[idx].start);
         let vel = custom_vel.unwrap_or(configs[idx].vel);
 
-        draw_boundary(&configs[idx].domain, &cam, w, h);
+        draw_boundary(cache, cam, w, h);
 
         if valid {
-            draw_trajectory(&segments, &cam, w, h);
+            draw_trajectory(&segments, cam, w, h);
         }
 
-        draw_start_marker(start, &cam, w, h);
-        draw_velocity_arrow(start, vel, &cam, w, h);
+        draw_start_marker(start, cam, w, h);
+        draw_velocity_arrow(start, vel, cam, w, h);
 
         // ---- HUD ----
         let label = custom_pos
@@ -214,8 +278,9 @@ async fn main() {
             .unwrap_or(configs[idx].label);
 
         let info = format!(
-            "{}  |  1 bounce  |  [Tab] next  |  click to place start",
+            "{}  |  {} bounces  |  [Tab] next  |  click to place start",
             label,
+            segments.len()
         );
         draw_text(&info, 12.0, 28.0, 18.0, color_u8!(200, 200, 220, 220));
         draw_text(

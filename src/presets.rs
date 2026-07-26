@@ -1,4 +1,5 @@
-use crate::domain::{self, Domain};
+use crate::domain;
+use crate::domain::Domain;
 use macroquad::prelude::*;
 
 pub struct Preset {
@@ -8,30 +9,46 @@ pub struct Preset {
     pub vel: Vec2,
 }
 
-pub fn all_presets() -> Vec<Preset> {
-    let stadium = domain::stadium();
-    let rect = domain::rectangle(3.0, 2.0);
-    let lshape = domain::l_shape();
+/// Confocal family: (b − λ)x² + (a − λ)y² = (a − λ)(b − λ),  λ ≤ a.
+///
+///   λ <  b   →  ellipse
+///   λ =  b   →  degenerate (segment between foci + horizontal rays)
+///   b < λ < a →  hyperbola (opens left/right)
+///   λ =  a   →  vertical segment
+const A: f32 = 4.0;
+const B: f32 = 1.0;
 
+pub fn all_presets() -> Vec<Preset> {
     vec![
         Preset {
-            label: "Bunimovich stadium",
-            domain: stadium,
-            start: vec2(-0.3, 0.2),
-            vel: vec2(0.8, 0.4),
+            label: "Square: ellipse λ=0, hyperbola λ=2.5",
+            domain: domain::confocal_quad(A, B, 0.0, 2.5),
+            start: vec2(0.0, 0.0),
+            vel: vec2(0.4, 0.3),
         },
         Preset {
-            label: "Rectangle 3×2",
-            domain: rect,
-            start: vec2(0.5, 0.5),
-            vel: vec2(0.6, 0.9),
+            label: "Thin: ellipse λ=-1, hyperbola λ=2.8",
+            domain: domain::confocal_quad(A, B, -1.0, 2.8),
+            start: vec2(0.0, 0.0),
+            vel: vec2(0.3, 0.5),
         },
         Preset {
-            label: "L-shape (π/2 & 3π/2 corners)",
-            domain: lshape,
+            label: "Flat: ellipse λ=0.5, hyperbola λ=2.2",
+            domain: domain::confocal_quad(A, B, 0.5, 2.2),
+            start: vec2(0.0, 0.0),
+            vel: vec2(0.5, 0.2),
+        },
+        Preset {
+            label: "L-shape (polyline)",
+            domain: domain::lshape_poly(),
             start: vec2(0.3, 0.3),
             vel: vec2(0.5, 0.7),
         },
+        Preset {
+            label: "Square (polyline)",
+            domain: domain::square(),
+            start: vec2(0.0, 0.0),
+            vel: vec2(0.4, 0.6),
+        },
     ]
 }
-

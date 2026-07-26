@@ -1,0 +1,195 @@
+use macroquad::prelude::*;
+
+/// Confocal quadric family:
+///
+///   (b − λ)·x² + (a − λ)·y² = (a − λ)·(b − λ),   λ ≤ a
+///
+/// where ∞ > a > b > 0 are fixed constants.
+/// The foci are at (±c, 0) with c² = a − b.
+///
+/// At λ = 0 we get the base ellipse x²/a + y²/b = 1.
+/// At λ = b we get the degenerate union of:
+///   - the segment [−c, +c] on the x-axis ("degenerate ellipse"), and
+///   - the two horizontal rays (−∞, −c] ∪ [+c, ∞) ("degenerate hyperbola").
+/// At λ = a we get the vertical segment x = 0, −√b ≤ y ≤ √b.
+#[derive(Clone, Copy, Debug)]
+pub struct ConfocalQuadric {
+    pub a_param: f32, // a
+    pub b_param: f32, // b
+    pub lambda: f32,  // λ
+}
+
+impl ConfocalQuadric {
+    /// Semi-focal distance c = √(a − b).
+    #[allow(dead_code)]
+    pub fn c(&self) -> f32 {
+        (self.a_param - self.b_param).sqrt()
+    }
+
+    /// Evaluate Q(x, y).  The interior (inside the billiard) is Q(p) < 0.
+    #[allow(dead_code)]
+    pub fn eval(&self, p: Vec2) -> f32 {
+        let a = self.a_param;
+        let b = self.b_param;
+        let lam = self.lambda;
+        (b - lam) * p.x * p.x + (a - lam) * p.y * p.y - (a - lam) * (b - lam)
+    }
+
+    /// Gradient ∇Q.
+    pub fn grad(&self, p: Vec2) -> Vec2 {
+        let a = self.a_param;
+        let b = self.b_param;
+        let lam = self.lambda;
+        vec2(2.0 * (b - lam) * p.x, 2.0 * (a - lam) * p.y)
+    }
+
+    pub fn inward_normal(&self, p: Vec2) -> Vec2 {
+        -self.grad(p).normalize()
+    }
+
+    pub fn reflect(&self, p: Vec2, dir: Vec2) -> Vec2 {
+        let n = self.inward_normal(p);
+        dir - 2.0 * dir.dot(n) * n
+    }
+
+    /// Smallest positive t where ray p + t·dir hits Q = 0.
+    pub fn intersect(&self, p: Vec2, dir: Vec2) -> Option<f32> {
+        let a = self.a_param;
+        let b = self.b_param;
+        let lam = self.lambda;
+        let bx = b - lam;
+        let ay = a - lam;
+
+        let qa = bx * dir.x * dir.x + ay * dir.y * dir.y;
+        let qb = 2.0 * (bx * p.x * dir.x + ay * p.y * dir.y);
+        let qc = bx * p.x * p.x + ay * p.y * p.y - ay * bx;
+
+        if qa.abs() < 1e-12 {
+            if qb.abs() < 1e-12 {
+                return None;
+            }
+            let t = -qc / qb;
+            return if t > 1e-6 { Some(t) } else { None };
+        }
+
+        let disc = qb * qb - 4.0 * qa * qc;
+        if disc < 0.0 {
+            return None;
+        }
+        let sd = disc.sqrt();
+        let t1 = (-qb - sd) / (2.0 * qa);
+        let t2 = (-qb + sd) / (2.0 * qa);
+
+        let eps = 1e-6;
+        let t = if t1 > eps {
+            t1
+        } else if t2 > eps {
+            t2
+        } else {
+            return None;
+        };
+        Some(t)
+    }
+
+    /// Centre of the quadric (∇Q = 0).
+    pub fn centre(&self) -> Vec2 {
+        vec2(0.0, 0.0)
+    }
+
+    /// Intersection points of two confocal quadrics with the same a, b.
+    /// Returns 4 points [tr, br, bl, tl] when they exist.
+    pub fn intersections(l1: &Self, l2: &Self) -> Option<[Vec2; 4]> {
+        let a = l1.a_param;
+        let b = l1.b_param;
+        let lam1 = l1.lambda;
+        let lam2 = l2.lambda;
+
+        // Solve the linear system in x², y²:
+        //   (b-λ₁)x² + (a-λ₁)y² = r₁,   rᵢ = (a-λᵢ)(b-λᵢ)
+        //   (b-λ₂)x² + (a-λ₂)y² = r₂
+        //
+        // In matrix form:
+        //   [ b-λ₁  a-λ₁ ] [x²]   [ r₁ ]
+        //   [ b-λ₂  a-λ₂ ] [y²] = [ r₂ ]
+        //
+        // det = (b-λ₁)(a-λ₂) - (b-λ₂)(a-λ₁) = (a-b)(λ₂-λ₁)
+        //
+        // Cramer's rule:
+        //   x² = (r₁·(a-λ₂) - r₂·(a-λ₁)) / det
+        //      = (a-λ₁)(a-λ₂)(λ₂-λ₁) / ((a-b)(λ₂-λ₁))
+        //      = (a-λ₁)(a-λ₂) / (a-b)
+        //
+        //   y² = ((b-λ₁)·r₂ - (b-λ₂)·r₁) / det
+        //      = (b-λ₁)(b-λ₂)(λ₁-λ₂) / ((a-b)(λ₂-λ₁))
+        //      = -(b-λ₁)(b-λ₂) / (a-b)
+        //      = (b-λ₁)(b-λ₂) / (b-a)
+
+        let x2 = ((a - lam1) * (a - lam2)) / (a - b);
+        let y2 = ((b - lam1) * (b - lam2)) / (b - a);
+
+        if x2 < 0.0 || y2 < 0.0 {
+            return None;
+        }
+
+        let x = x2.sqrt();
+        let y = y2.sqrt();
+
+        Some([
+            vec2(x, y),   // tr
+            vec2(x, -y),  // br
+            vec2(-x, -y), // bl
+            vec2(-x, y),  // tl
+        ])
+    }
+
+    /// Sample points on this quadric by casting rays from the origin.
+    #[allow(dead_code)]
+    pub fn sample_boundary(&self, n: usize) -> Vec<Vec2> {
+        (0..n)
+            .filter_map(|i| {
+                let angle = 2.0 * std::f32::consts::PI * i as f32 / n as f32;
+                let dir = vec2(angle.cos(), angle.sin());
+                self.intersect(vec2(0.0, 0.0), dir).map(|t| dir * t)
+            })
+            .collect()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Convenience constructors
+// ---------------------------------------------------------------------------
+
+/// Create a confocal quadric: (b − λ)x² + (a − λ)y² = (a − λ)(b − λ).
+pub fn confocal(a: f32, b: f32, lambda: f32) -> ConfocalQuadric {
+    ConfocalQuadric {
+        a_param: a,
+        b_param: b,
+        lambda,
+    }
+}
+
+/// Given an ellipse (λ₁) and a hyperbola (λ₂) from the same confocal family,
+/// return 4 arcs `[(from, to, quadric)]` in CCW order:
+///   0 = top (ellipse, right → left), 1 = left (hyperbola, top → bottom),
+///   2 = bottom (ellipse, left → right), 3 = right (hyperbola, bottom → top).
+pub fn quadrilateral_arcs(
+    a: f32,
+    b: f32,
+    lambda_ell: f32,
+    lambda_hyp: f32,
+) -> Vec<(Vec2, Vec2, ConfocalQuadric)> {
+    let ell = confocal(a, b, lambda_ell);
+    let hyp = confocal(a, b, lambda_hyp);
+
+    let pts = ConfocalQuadric::intersections(&ell, &hyp)
+        .expect("The two confocal quadrics must intersect");
+
+    let [tr, br, bl, tl] = pts;
+
+    vec![
+        (tr, tl, ell), // top: ellipse right → left
+        (tl, bl, hyp), // left: hyperbola top → bottom
+        (bl, br, ell), // bottom: ellipse left → right
+        (br, tr, hyp), // right: hyperbola bottom → top
+    ]
+}
