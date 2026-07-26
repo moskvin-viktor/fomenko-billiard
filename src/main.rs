@@ -1,5 +1,6 @@
 use billiards::{domain, presets, quadratic, start_points_on_caustic, A, B};
 use macroquad::prelude::*;
+use std::cmp::Ordering;
 
 // ----------------------------------------------------------------
 // Camera
@@ -138,13 +139,35 @@ fn draw_start_marker(pos: Vec2, cam: &Camera, w: f32, h: f32) {
     draw_circle(s.x, s.y, 3.5, YELLOW);
 }
 
+/// Draw the degenerate caustic reference lines (focal segment at λ = B
+/// and vertical segment at λ = A), plus the current caustic curve.
 fn draw_caustic(a: f32, b: f32, lam: f32, domain: &domain::Domain, cam: &Camera, w: f32, h: f32) {
+    // Draw degenerate caustic at λ = B: segment between foci (±c, 0)
+    let c = (a - b).sqrt();
+    let f1 = cam.world_to_screen(vec2(-c, 0.0), w, h);
+    let f2 = cam.world_to_screen(vec2(c, 0.0), w, h);
+    draw_line(f1.x, f1.y, f2.x, f2.y, 1.5, color_u8!(255, 200, 50, 80));
+    draw_circle(f1.x, f1.y, 2.5, color_u8!(255, 200, 50, 100));
+    draw_circle(f2.x, f2.y, 2.5, color_u8!(255, 200, 50, 100));
+
+    // Draw degenerate caustic at λ = A: vertical segment x = 0, y ∈ [−√b, √b]
+    let y = b.sqrt();
+    let v1 = cam.world_to_screen(vec2(0.0, -y), w, h);
+    let v2 = cam.world_to_screen(vec2(0.0, y), w, h);
+    draw_line(v1.x, v1.y, v2.x, v2.y, 1.5, color_u8!(255, 200, 50, 80));
+    draw_circle(v1.x, v1.y, 2.5, color_u8!(255, 200, 50, 100));
+    draw_circle(v2.x, v2.y, 2.5, color_u8!(255, 200, 50, 100));
+
+    // Draw the current caustic curve (skip if degenerate)
+    if (lam - b).abs() < 0.03 || (lam - a).abs() < 0.03 {
+        return;
+    }
     let quad = quadratic::confocal(a, b, lam);
     let pts = quad.sample_boundary(80);
     for &p in &pts {
         if domain.contains(p) {
             let s = cam.world_to_screen(p, w, h);
-            draw_circle(s.x, s.y, 1.5, color_u8!(255, 255, 100, 120));
+            draw_circle(s.x, s.y, 1.8, color_u8!(255, 255, 100, 160));
         }
     }
 }
@@ -166,22 +189,179 @@ fn get_boundary_lambdas(domain: &domain::Domain) -> (f32, f32) {
     (ell, hyp)
 }
 
-/// Clamp Λ to the valid range.
-/// Ellipse caustic: λ_ell < Λ < b  (caustic inside boundary ellipse)
-/// Hyperbola caustic: λ_hyp < Λ < a (caustic narrower than boundary hyperbola, inside)
-fn clamp_lambda(lam: f32, domain: &domain::Domain) -> f32 {
+/// Clamp Λ to the valid range, jumping over the gap between ellipse and
+/// hyperbola ranges. Uses `prev` to determine direction when crossing.
+///
+/// Ellipse caustic: λ_ell < Λ < B  (inside boundary ellipse)
+/// Hyperbola caustic: λ_hyp < Λ < A (inside boundary hyperbola)
+fn clamp_lambda(lam: f32, prev: f32, domain: &domain::Domain) -> f32 {
     let (lambda_ell, lambda_hyp) = get_boundary_lambdas(domain);
     let e = 0.02;
-    if lam >= B - e && lam <= B + e {
-        if lam < B {
-            B - 2.0 * e
-        } else {
-            B + 2.0 * e
+    let ell_max = B - e;
+    let hyp_min = lambda_hyp + e;
+    let range_min = lambda_ell + e;
+    let range_max = A - e;
+
+    let clamped = lam.clamp(range_min, range_max);
+
+    // If clamped lands in the gap between ellipse and hyperbola ranges,
+    // jump to the appropriate side based on travel direction.
+    if clamped > ell_max && clamped < hyp_min {
+        match lam.partial_cmp(&prev).unwrap_or(Ordering::Equal) {
+            Ordering::Greater => hyp_min,
+            _ => ell_max,
         }
-    } else if lam <= B {
-        lam.clamp(lambda_ell + e, B - e)
     } else {
-        lam.clamp(lambda_hyp + e, A - e)
+        clamped
+    }
+}
+
+/// Slider range info for a given domain.
+struct SliderRange {
+    ell_min: f32,
+    ell_max: f32,
+    hyp_min: f32,
+    #[allow(dead_code)]
+    hyp_max: f32,
+    total_range: f32,
+}
+
+impl SliderRange {
+    fn new(domain: &domain::Domain) -> Self {
+        let (lambda_ell, lambda_hyp) = get_boundary_lambdas(domain);
+        let e = 0.02;
+        let ell_min = lambda_ell + e;
+        let ell_max = B - e;
+        let hyp_min = lambda_hyp + e;
+        let _hyp_max = A - e;
+        let ell_range = (ell_max - ell_min).max(0.0);
+        let hyp_range = (_hyp_max - hyp_min).max(0.0);
+        let total_range = ell_range + hyp_range;
+        Self {
+            ell_min,
+            ell_max,
+            hyp_min,
+            hyp_max: _hyp_max,
+            total_range,
+        }
+    }
+
+    /// Map slider fraction t ∈ [0, 1] to lambda, skipping the gap.
+    fn to_lambda(&self, t: f32) -> f32 {
+        if self.total_range <= 0.0 {
+            return 0.0;
+        }
+        let ell_range = self.ell_max - self.ell_min;
+        let t = t.clamp(0.0, 1.0);
+        let pos = t * self.total_range;
+        if pos <= ell_range {
+            self.ell_min + pos
+        } else {
+            self.hyp_min + (pos - ell_range)
+        }
+    }
+
+    /// Map lambda to slider fraction t ∈ [0, 1].
+    fn from_lambda(&self, lam: f32) -> f32 {
+        if self.total_range <= 0.0 {
+            return 0.0;
+        }
+        let ell_range = self.ell_max - self.ell_min;
+        if lam <= self.ell_max {
+            (lam - self.ell_min) / self.total_range
+        } else if lam >= self.hyp_min {
+            (ell_range + (lam - self.hyp_min)) / self.total_range
+        } else {
+            // In the gap — map to the nearest edge (ellipse end)
+            ell_range / self.total_range
+        }
+    }
+}
+
+// ----------------------------------------------------------------
+// Slider widget
+// ----------------------------------------------------------------
+struct Slider {
+    x: f32,
+    y: f32,
+    width: f32,
+    dragging: bool,
+}
+
+impl Slider {
+    fn new() -> Self {
+        Self {
+            x: 0.0,
+            y: 0.0,
+            width: 0.0,
+            dragging: false,
+        }
+    }
+
+    /// Draw the slider and handle mouse interaction.
+    /// Returns the new lambda value if the slider moved.
+    fn update(&mut self, lambda: f32, range: &SliderRange) -> Option<f32> {
+        let track_h = 4.0;
+        let thumb_r = 8.0;
+        let cy = self.y + track_h / 2.0;
+
+        // Draw track (background)
+        draw_rectangle(
+            self.x,
+            self.y,
+            self.width,
+            track_h,
+            color_u8!(60, 60, 100, 180),
+        );
+
+        // Draw filled portion
+        let t = range.from_lambda(lambda);
+        let fill_w = t * self.width;
+        if fill_w > 0.0 {
+            draw_rectangle(
+                self.x,
+                self.y,
+                fill_w,
+                track_h,
+                color_u8!(130, 130, 200, 220),
+            );
+        }
+
+        // Draw thumb
+        let thumb_x = self.x + t * self.width;
+        draw_circle(thumb_x, cy, thumb_r, color_u8!(220, 220, 255, 255));
+        draw_circle_lines(thumb_x, cy, thumb_r, 1.5, color_u8!(100, 100, 160, 200));
+
+        // Draw gap indicator (a small break in the track)
+        if range.ell_max < range.hyp_min {
+            let gap_t = range.from_lambda(range.ell_max);
+            let gap_x = self.x + gap_t * self.width;
+            draw_line(gap_x, self.y - 2.0, gap_x, self.y + track_h + 2.0, 2.0, BG);
+        }
+
+        // Handle mouse interaction
+        let mx = mouse_position().0;
+        let my = mouse_position().1;
+
+        if is_mouse_button_pressed(MouseButton::Left) {
+            let dist = ((mx - thumb_x).powi(2) + (my - cy).powi(2)).sqrt();
+            if dist <= thumb_r + 4.0
+                || (mx >= self.x && mx <= self.x + self.width && (my - cy).abs() <= 12.0)
+            {
+                self.dragging = true;
+            }
+        }
+
+        if self.dragging {
+            if is_mouse_button_down(MouseButton::Left) {
+                let t = ((mx - self.x) / self.width).clamp(0.0, 1.0);
+                return Some(range.to_lambda(t));
+            } else {
+                self.dragging = false;
+            }
+        }
+
+        None
     }
 }
 
@@ -198,6 +378,7 @@ async fn main() {
 
     let mut idx = 0usize;
     let mut lambda: f32 = 0.2;
+    let mut slider = Slider::new();
 
     let trace_all = |domain: &domain::Domain, lam: f32| -> Vec<Vec<(Vec2, Vec2)>> {
         let starts = start_points_on_caustic(A, B, lam, domain);
@@ -215,6 +396,15 @@ async fn main() {
         let cache = &caches[idx];
         let cam = &cache.camera;
 
+        // Position the slider
+        slider.x = w * 0.15;
+        slider.y = h - 50.0;
+        slider.width = w * 0.7;
+
+        // Build slider range for the current domain
+        let slider_range = SliderRange::new(&configs[idx].domain);
+
+        // Keyboard input
         if is_key_pressed(KeyCode::Tab) || is_key_pressed(KeyCode::Space) {
             idx = (idx + 1) % configs.len();
             lambda = 0.2;
@@ -223,12 +413,14 @@ async fn main() {
         }
 
         if is_key_pressed(KeyCode::Up) || is_key_pressed(KeyCode::Right) {
-            lambda = clamp_lambda(lambda + 0.05, &configs[idx].domain);
+            let next = clamp_lambda(lambda + 0.05, lambda, &configs[idx].domain);
+            lambda = next;
             trajectories = trace_all(&configs[idx].domain, lambda);
             start_points = start_points_on_caustic(A, B, lambda, &configs[idx].domain);
         }
         if is_key_pressed(KeyCode::Down) || is_key_pressed(KeyCode::Left) {
-            lambda = clamp_lambda(lambda - 0.05, &configs[idx].domain);
+            let next = clamp_lambda(lambda - 0.05, lambda, &configs[idx].domain);
+            lambda = next;
             trajectories = trace_all(&configs[idx].domain, lambda);
             start_points = start_points_on_caustic(A, B, lambda, &configs[idx].domain);
         }
@@ -243,6 +435,15 @@ async fn main() {
         }
         for &(p, _) in &start_points {
             draw_start_marker(p, cam, w, h);
+        }
+
+        // Slider input (draw + handle mouse)
+        if let Some(new_lam) = slider.update(lambda, &slider_range) {
+            if (new_lam - lambda).abs() > 0.0001 {
+                lambda = new_lam;
+                trajectories = trace_all(&configs[idx].domain, lambda);
+                start_points = start_points_on_caustic(A, B, lambda, &configs[idx].domain);
+            }
         }
 
         let caustic_type = if lambda < B { "ellipse" } else { "hyperbola" };
