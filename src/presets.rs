@@ -5,7 +5,9 @@ use macroquad::prelude::*;
 pub struct Preset {
     pub label: &'static str,
     pub domain: Domain,
+    #[allow(dead_code)]
     pub start: Vec2,
+    #[allow(dead_code)]
     pub vel: Vec2,
 }
 

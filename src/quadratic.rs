@@ -153,6 +153,31 @@ impl ConfocalQuadric {
             })
             .collect()
     }
+
+    /// Velocity tangent to the caustic quadric Q_Λ(x,y) = 0 at point p.
+    ///
+    /// The tangent direction at p is perpendicular to ∇Q_Λ(p), so:
+    ///   v = ± normalize( ∇Q_Λ(p) × (0,0,1) )  =  ± normalize( -∂Q/∂y, ∂Q/∂x )
+    ///
+    /// Gradient of the caustic: (2(b-Λ)x, 2(a-Λ)y)
+    /// Tangent: (-(a-Λ)y, (b-Λ)x)  — rotates gradient 90° CW.
+    ///
+    /// We pick the sign closest to `hint_dir`.
+    pub fn velocity_from_caustic(a: f32, b: f32, p: Vec2, lambda: f32, hint_dir: Vec2) -> Vec2 {
+        // ∇Q_Λ(p) = (2(b-Λ)x, 2(a-Λ)y)
+        // Tangent (perpendicular, rotated 90° CW): (-(a-Λ)y, (b-Λ)x)
+        let t = vec2(-(a - lambda) * p.y, (b - lambda) * p.x);
+        let t = t.normalize();
+
+        // Two possible directions: ±t
+        // Pick the one closer to hint_dir
+        let hint = hint_dir.normalize();
+        if t.dot(hint) >= 0.0 {
+            t
+        } else {
+            -t
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
