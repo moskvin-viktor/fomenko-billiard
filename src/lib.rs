@@ -126,6 +126,95 @@ pub fn start_points_on_caustic(
     }
 }
 
+/// Densely sample start points along the caustic inside the domain.
+///
+/// Unlike [`start_points_on_caustic`] (which returns one point per connected
+/// component), this returns *many* points spread along each component.  This is
+/// used to fill out the 2D Liouville torus in the 3D phase-space view: each
+/// start point traces a 1D curve, and the union of many such curves at the same
+/// Λ sweeps out the full 2D invariant torus.
+///
+/// In action-angle coordinates the torus is the flat product S¹ × S¹; in the
+/// (x, y, θ) embedding used here it appears as a warped 2D surface.
+pub fn dense_caustic_starts(
+    a: f32,
+    b: f32,
+    lam: f32,
+    domain: &domain::Domain,
+    per_component: usize,
+) -> Vec<(Vec2, Vec2)> {
+    let hint_dir = vec2(0.0, 1.0);
+    let quad = quadratic::confocal(a, b, lam);
+    let n_samples = 4096;
+    let pts = quad.sample_boundary(n_samples);
+
+    let bounds = confocal_bounds(domain);
+    let slack = if bounds.is_some() { 0.03 } else { 0.06 };
+    let inside: Vec<bool> = pts
+        .iter()
+        .map(|&p| match bounds {
+            Some((le, lh)) => confocal_inside(a, b, p, le, lh, slack),
+            None => domain.contains(p),
+        })
+        .collect();
+    let n = pts.len();
+    if !inside.iter().any(|&x| x) {
+        return vec![];
+    }
+
+    let start = (0..n)
+        .find(|&i| inside[i] && !inside[(i + n - 1) % n])
+        .unwrap();
+
+    let mut starts = Vec::new();
+    let mut i = start;
+    loop {
+        while !inside[i] {
+            i = (i + 1) % n;
+            if i == start {
+                return starts;
+            }
+        }
+        let run_start = i;
+        while inside[i] {
+            i = (i + 1) % n;
+            if i == start {
+                break;
+            }
+        }
+        let run_end = (i + n - 1) % n;
+        let run_len = (run_end + n - run_start) % n + 1;
+
+        // Spread `per_component` points along this run, skipping the
+        // unreliable boundary-adjacent samples at each end.
+        let margin = 8;
+        let usable = run_len.saturating_sub(2 * margin);
+        if usable > 0 {
+            let count = per_component.min(usable);
+            for k in 0..count {
+                let idx =
+                    (run_start + margin + (usable as f32 * k as f32 / count as f32) as usize) % n;
+                let p = project_to_curve(&quad, pts[idx]);
+                let genuinely_inside = match bounds {
+                    Some((le, lh)) => confocal_inside(a, b, p, le, lh, 0.0),
+                    None => domain.contains(p),
+                };
+                if !genuinely_inside {
+                    continue;
+                }
+                let vel = quadratic::ConfocalQuadric::velocity_from_caustic(a, b, p, lam, hint_dir);
+                // Add BOTH directions of motion.  The caustic tangent has two
+                // signs; a single sign fills only half the Liouville torus.
+                starts.push((p, vel));
+                starts.push((p, -vel));
+            }
+        }
+        if i == start {
+            return starts;
+        }
+    }
+}
+
 /// Extract (λ_ellipse, λ_hyperbola) of a confocal-quadrilateral domain.
 /// Returns `None` for non-quadrilaterals (e.g. L-shapes with 6 arcs)
 /// since the simple ellipse/hyperbola test is only valid for quadrilaterals.

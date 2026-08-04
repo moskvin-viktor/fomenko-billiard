@@ -444,6 +444,8 @@ async fn main() {
     let mut second_int: f32 = 0.2; // Λ for confocal, θ/π for polyline
     let mut slider = Slider::new();
     let mut show_3d = false;
+    let mut animate = false;
+    let mut anim_dir: f32 = 1.0;
     let mut cam3d = phase3d::OrbitCamera3::new();
     let mut phase_trajectories: Vec<Vec<phase3d::PhasePoint>> = Vec::new();
 
@@ -455,6 +457,28 @@ async fn main() {
             .map(|(p, v)| domain.trace(*p, *v, 300))
             .collect();
         (starts, trajs)
+    };
+
+    // Build dense phase-space trajectories for the 3D torus view.
+    // For confocal billiards we densely sample the caustic so the union of
+    // trajectories fills the 2D Liouville torus (in action-angle coordinates
+    // this is the flat product S¹ × S¹; in (x, y, θ) it is a warped surface).
+    // For polyline billiards we just use the single start point.
+    let build_phase = |domain: &domain::Domain,
+                       lam: f32,
+                       preset: &presets::Preset|
+     -> Vec<Vec<phase3d::PhasePoint>> {
+        let starts = if preset.is_confocal {
+            billiards::dense_caustic_starts(A, B, lam, domain, 24)
+        } else {
+            billiards::get_start_points(A, B, lam, domain, false, preset.start_center)
+        };
+        // Sample interior points along each segment so the torus surface is
+        // densely filled (not just sparse bounce dots).
+        starts
+            .iter()
+            .map(|&(p, v)| phase3d::sample_trajectory_phase_dense(domain, p, v, 200, 8))
+            .collect()
     };
 
     let (mut start_points, mut trajectories) =
@@ -473,12 +497,16 @@ async fn main() {
 
         let slider_range = SecondIntegralRange::for_domain(&preset.domain, preset.is_confocal);
 
+        // Toggle animation
+        if is_key_pressed(KeyCode::A) {
+            animate = !animate;
+        }
+
         // Toggle 3D
         if is_key_pressed(KeyCode::P) {
             show_3d = !show_3d;
             if show_3d {
-                phase_trajectories =
-                    phase3d::sample_all_trajectories_phase(&preset.domain, &start_points, 300);
+                phase_trajectories = build_phase(&preset.domain, second_int, preset);
             }
         }
 
@@ -490,11 +518,7 @@ async fn main() {
             start_points = s;
             trajectories = t;
             if show_3d {
-                phase_trajectories = phase3d::sample_all_trajectories_phase(
-                    &configs[idx].domain,
-                    &start_points,
-                    300,
-                );
+                phase_trajectories = build_phase(&configs[idx].domain, second_int, &configs[idx]);
             }
         }
 
@@ -507,11 +531,8 @@ async fn main() {
                 start_points = s;
                 trajectories = t;
                 if show_3d {
-                    phase_trajectories = phase3d::sample_all_trajectories_phase(
-                        &configs[idx].domain,
-                        &start_points,
-                        300,
-                    );
+                    phase_trajectories =
+                        build_phase(&configs[idx].domain, second_int, &configs[idx]);
                 }
             }
             if is_key_pressed(KeyCode::Down) || is_key_pressed(KeyCode::Left) {
@@ -521,11 +542,8 @@ async fn main() {
                 start_points = s;
                 trajectories = t;
                 if show_3d {
-                    phase_trajectories = phase3d::sample_all_trajectories_phase(
-                        &configs[idx].domain,
-                        &start_points,
-                        300,
-                    );
+                    phase_trajectories =
+                        build_phase(&configs[idx].domain, second_int, &configs[idx]);
                 }
             }
         } else {
@@ -535,11 +553,8 @@ async fn main() {
                 start_points = s;
                 trajectories = t;
                 if show_3d {
-                    phase_trajectories = phase3d::sample_all_trajectories_phase(
-                        &configs[idx].domain,
-                        &start_points,
-                        300,
-                    );
+                    phase_trajectories =
+                        build_phase(&configs[idx].domain, second_int, &configs[idx]);
                 }
             }
             if is_key_pressed(KeyCode::Down) || is_key_pressed(KeyCode::Left) {
@@ -548,11 +563,8 @@ async fn main() {
                 start_points = s;
                 trajectories = t;
                 if show_3d {
-                    phase_trajectories = phase3d::sample_all_trajectories_phase(
-                        &configs[idx].domain,
-                        &start_points,
-                        300,
-                    );
+                    phase_trajectories =
+                        build_phase(&configs[idx].domain, second_int, &configs[idx]);
                 }
             }
         }
@@ -567,12 +579,63 @@ async fn main() {
                 start_points = s;
                 trajectories = t;
                 if show_3d {
-                    phase_trajectories = phase3d::sample_all_trajectories_phase(
-                        &configs[idx].domain,
-                        &start_points,
-                        300,
-                    );
+                    phase_trajectories =
+                        build_phase(&configs[idx].domain, second_int, &configs[idx]);
                 }
+            }
+        }
+
+        // Smooth animation: sweep the second integral back and forth.
+        if animate {
+            let speed = 0.4; // units per second
+            let dt = get_frame_time();
+            let step = speed * dt;
+
+            if configs[idx].is_confocal {
+                let (lambda_ell, lambda_hyp) = get_ell_hyp(&configs[idx].domain);
+                let e = 0.05;
+                let ell_min = lambda_ell + e;
+                let ell_max = B - e;
+                let hyp_min = lambda_hyp + e;
+                let hyp_max = A - e;
+
+                let mut next = second_int + anim_dir * step;
+                // Bounce off the ends of the valid range.
+                if next >= ell_max && next <= hyp_min {
+                    // Crossing the gap: jump to the other side.
+                    if anim_dir > 0.0 {
+                        next = hyp_min;
+                    } else {
+                        next = ell_max;
+                    }
+                }
+                if next >= hyp_max {
+                    next = hyp_max;
+                    anim_dir = -1.0;
+                }
+                if next <= ell_min {
+                    next = ell_min;
+                    anim_dir = 1.0;
+                }
+                second_int = next;
+            } else {
+                let mut next = second_int + anim_dir * step;
+                if next >= 1.0 {
+                    next = 1.0;
+                    anim_dir = -1.0;
+                }
+                if next <= -1.0 {
+                    next = -1.0;
+                    anim_dir = 1.0;
+                }
+                second_int = next;
+            }
+
+            let (s, t) = build_trajectories(&configs[idx].domain, second_int, &configs[idx]);
+            start_points = s;
+            trajectories = t;
+            if show_3d {
+                phase_trajectories = build_phase(&configs[idx].domain, second_int, &configs[idx]);
             }
         }
 
@@ -582,20 +645,18 @@ async fn main() {
             // ---- 3D phase space view ----
             cam3d.handle_input();
             phase3d::draw_axes(&cam3d, w, h, cache.domain_extent);
-            phase3d::draw_phase_trajectories(
-                &phase_trajectories,
-                &cam3d,
-                w,
-                h,
-                cache.domain_extent,
-            );
+            // Dense points fill the 2D Liouville torus surface.
+            let is_hyperbola = second_int > B;
+            phase3d::draw_phase_points(&phase_trajectories, &cam3d, w, h, is_hyperbola);
+            phase3d::draw_phase_trajectories(&phase_trajectories, &cam3d, w, h, is_hyperbola);
 
             let info = format!(
-                "{}  |  {} = {:.3}  |  {} trajs  |  [P] 2D  |  right-drag orbit",
+                "{}  |  {} = {:.3}  |  {} trajs  |  [P] 2D  |  [A] anim {}  |  right-drag orbit",
                 preset.label,
                 preset.second_integral_label,
                 second_int,
-                start_points.len(),
+                phase_trajectories.len(),
+                if animate { "on" } else { "off" },
             );
             draw_text(&info, 12.0, 28.0, 18.0, color_u8!(200, 200, 220, 220));
             draw_text(
@@ -627,8 +688,9 @@ async fn main() {
             let total: usize = trajectories.iter().map(|t| t.len()).sum();
             let info =
                 format!(
-                "{}  |  {} = {:.3}  |  {} trajs, {} bounces  |  ↑↓ adjust  |  [P] 3D  |  Tab next",
+                "{}  |  {} = {:.3}  |  {} trajs, {} bounces  |  ↑↓ adjust  |  [A] anim {}  |  [P] 3D  |  Tab next",
                 preset.label, preset.second_integral_label, second_int, start_points.len(), total,
+                if animate { "on" } else { "off" },
             );
             draw_text(&info, 12.0, 28.0, 18.0, color_u8!(200, 200, 220, 220));
 

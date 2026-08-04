@@ -1,3 +1,4 @@
+use crate::{A, B};
 use macroquad::prelude::*;
 
 /// A 3D phase space point (x, y, θ/π) where θ = atan2(vy, vx)
@@ -30,7 +31,7 @@ impl OrbitCamera3 {
         Self {
             azimuth: -0.6,
             elevation: 0.5,
-            distance: 5.0,
+            distance: 3.2,
             last_mouse: None,
             dragging: false,
         }
@@ -155,32 +156,216 @@ pub fn sample_all_trajectories_phase(
         .collect()
 }
 
+/// Sample a single trajectory densely, recording interior points along each
+/// segment (not just bounce points).
+///
+/// This is what makes the torus surface look filled in the 3D view: sampling
+/// `per_seg` points along every segment of many trajectories sweeps out the
+/// whole 2D surface instead of leaving sparse dots at the bounces.
+pub fn sample_trajectory_phase_dense(
+    domain: &crate::domain::Domain,
+    p0: Vec2,
+    v0: Vec2,
+    max_steps: usize,
+    per_seg: usize,
+) -> Vec<PhasePoint> {
+    let mut pts = Vec::new();
+    let mut p = p0;
+    let mut v = v0;
+    for _ in 0..max_steps {
+        let speed = v.length();
+        if speed < 1e-12 {
+            break;
+        }
+        let dir = v / speed;
+        let (_t, idx, hit) = match domain.intersect(p, dir) {
+            Some(r) => r,
+            None => break,
+        };
+        for k in 0..per_seg {
+            let f = k as f32 / per_seg as f32;
+            let q = p + (hit - p) * f;
+            let theta = v.y.atan2(v.x) / std::f32::consts::PI;
+            pts.push(PhasePoint {
+                x: q.x,
+                y: q.y,
+                theta,
+            });
+        }
+        v = domain.reflect(hit, v, idx);
+        p = hit + 1e-4 * v.normalize();
+    }
+    pts
+}
+
+/// Sample the full 4D phase space (x, y, vx, vy) along a trajectory,
+/// including interior points between bounces.
+///
+/// This is used to verify the invariant manifold is a 2D torus: in the full
+/// 4D phase space the two integrals H and Λ confine the motion to a 2D surface,
+/// so a dense point cloud sampled here should have 2 large PCA eigenvalues and
+/// 2 small ones.
+pub fn sample_trajectory_phase_full(
+    domain: &crate::domain::Domain,
+    p0: Vec2,
+    v0: Vec2,
+    max_steps: usize,
+    per_seg: usize,
+) -> Vec<[f32; 4]> {
+    let mut pts = Vec::new();
+    let mut p = p0;
+    let mut v = v0;
+    for _ in 0..max_steps {
+        let speed = v.length();
+        if speed < 1e-12 {
+            break;
+        }
+        let dir = v / speed;
+        let (_t, idx, hit) = match domain.intersect(p, dir) {
+            Some(r) => r,
+            None => break,
+        };
+        // Sample interior points along this segment.
+        for k in 0..per_seg {
+            let f = k as f32 / per_seg as f32;
+            let q = p + (hit - p) * f;
+            pts.push([q.x, q.y, v.x, v.y]);
+        }
+        v = domain.reflect(hit, v, idx);
+        p = hit + 1e-4 * v.normalize();
+    }
+    pts
+}
+
+/// Find the velocity direction(s) at position `pos` that give the target
+/// second integral `lam` (with |v| = 1).
+///
+/// For a fixed Λ and position, there are exactly two unit velocity directions
+/// (the two tangents to the confocal caustic through that point).  Sampling
+/// both directions across many positions fills out the full 2D Liouville torus,
+/// which is what the PCA dimensionality test needs.
+pub fn velocities_for_lambda(pos: Vec2, lam: f32, a: f32, b: f32) -> Vec<Vec2> {
+    let mut out = Vec::new();
+    let n = 720;
+    let mut prev = f_lam(0.0, pos, lam, a, b);
+    for i in 1..=n {
+        let th = 2.0 * std::f32::consts::PI * i as f32 / n as f32;
+        let cur = f_lam(th, pos, lam, a, b);
+        if prev * cur < 0.0 {
+            // Bisect to refine the root.
+            let mut lo = 2.0 * std::f32::consts::PI * (i - 1) as f32 / n as f32;
+            let mut hi = th;
+            for _ in 0..40 {
+                let mid = 0.5 * (lo + hi);
+                if f_lam(mid, pos, lam, a, b) * f_lam(lo, pos, lam, a, b) < 0.0 {
+                    hi = mid;
+                } else {
+                    lo = mid;
+                }
+            }
+            let th_root = 0.5 * (lo + hi);
+            out.push(vec2(th_root.cos(), th_root.sin()));
+        }
+        prev = cur;
+    }
+    out
+}
+
+/// Λ(θ) − lam for a unit velocity at angle θ.
+fn f_lam(th: f32, pos: Vec2, lam: f32, a: f32, b: f32) -> f32 {
+    let (vx, vy) = (th.cos(), th.sin());
+    let x = pos.x;
+    let y = pos.y;
+    vx * vx / a + vy * vy / b - (x * vy - y * vx).powi(2) / (a * b) - lam
+}
+
 // ----------------------------------------------------------------
 // 3D drawing helpers
 // ----------------------------------------------------------------
 
-/// Draw a set of phase space trajectories as 3D curves.
+/// Map a phase-space point onto a standard torus embedding and return both the
+/// 3D position and the outward surface normal.
+///
+/// The two angle coordinates are the **elliptic coordinates** (μ, ν) of the
+/// point: every (x, y) lies on one confocal ellipse (μ < b) and one confocal
+/// hyperbola (ν > b).  These are the separable coordinates of the elliptic
+/// billiard, so at fixed Λ the pair (μ, ν) fills a genuine 2D rectangle — the
+/// correct torus parametrization.  (Using (atan2(y,x), θ) instead collapses to
+/// a 1D curve at fixed Λ, which is why the torus looked flat/unrecognizable.)
+///
+/// The outward normal of the standard torus at (φ₁, φ₂) is:
+///   n = (cos φ₂ · cos φ₁, cos φ₂ · sin φ₁, sin φ₂)
+/// which lets us shade the surface so its 3D curvature is visible.
+fn torus_embed(pt: &PhasePoint, r_major: f32, r_minor: f32, is_hyperbola: bool) -> (Vec3, Vec3) {
+    // Elliptic coordinates (μ, ν) from the confocal family.
+    let (mu, nu) = elliptic_coords(pt.x, pt.y);
+    // Map μ ∈ (−∞, b] onto the first torus angle.
+    let phi1 = normalize_angle(mu, -2.0, B);
+    // The hyperbola coordinate ν ∈ [b, a] only encodes the magnitude.  For a
+    // hyperbola caustic (Λ > B) the two disconnected lobes (left/right
+    // branches) have the SAME ν, so we use the sign of x to place them on
+    // opposite halves of the torus.  For an ellipse caustic (Λ < B) the torus
+    // is a single connected surface, so no sign is needed.
+    let phi2 = if is_hyperbola && pt.x >= 0.0 {
+        normalize_angle(nu, B, A) // right branch → one half
+    } else if is_hyperbola {
+        -normalize_angle(nu, B, A) // left branch → the other half
+    } else {
+        normalize_angle(nu, B, A)
+    };
+    let cos2 = phi2.cos();
+    let (sin1, cos1) = phi1.sin_cos();
+    let pos = vec3(
+        (r_major + r_minor * cos2) * cos1,
+        (r_major + r_minor * cos2) * sin1,
+        r_minor * phi2.sin(),
+    );
+    let normal = vec3(cos2 * cos1, cos2 * sin1, phi2.sin());
+    (pos, normal)
+}
+
+/// Solve the confocal-family equation for the two elliptic coordinates (μ, ν)
+/// of a point (x, y):  (b−λ)x² + (a−λ)y² = (a−λ)(b−λ).
+fn elliptic_coords(x: f32, y: f32) -> (f32, f32) {
+    let a = A;
+    let b = B;
+    let s = x * x + y * y;
+    let t = b * x * x + a * y * y - a * b;
+    let p = a + b - s;
+    let disc = p * p + 4.0 * t;
+    let sd = disc.max(0.0).sqrt();
+    let lam1 = 0.5 * (p - sd);
+    let lam2 = 0.5 * (p + sd);
+    (lam1, lam2) // μ = lam1 (ellipse), ν = lam2 (hyperbola)
+}
+
+/// Linearly map a value in [lo, hi] onto the angle range [−π, π].
+fn normalize_angle(v: f32, lo: f32, hi: f32) -> f32 {
+    let t = ((v - lo) / (hi - lo)).clamp(0.0, 1.0);
+    -std::f32::consts::PI + 2.0 * std::f32::consts::PI * t
+}
+
+/// Draw a set of phase space trajectories as 3D curves on the torus.
 pub fn draw_phase_trajectories(
     trajectories: &[Vec<PhasePoint>],
     cam: &OrbitCamera3,
     win_w: f32,
     win_h: f32,
-    domain_extent: f32,
+    is_hyperbola: bool,
 ) {
-    // Scale factor so the billiard fits in the [-1, 1] box in x/y
-    // and θ is in [-1, 1] as well.
-    let scale = 1.0 / domain_extent.max(0.5);
+    let r_major = 1.6;
+    let r_minor = 0.6;
 
     for traj in trajectories {
         if traj.len() < 2 {
             continue;
         }
 
-        // Project all points
+        // Project all points onto the torus
         let projected: Vec<Vec3> = traj
             .iter()
             .map(|pt| {
-                let p = vec3(pt.x * scale, pt.y * scale, pt.theta);
+                let (p, _n) = torus_embed(pt, r_major, r_minor, is_hyperbola);
                 cam.project(p, win_w, win_h)
             })
             .collect();
@@ -203,6 +388,55 @@ pub fn draw_phase_trajectories(
             let mut c = color;
             c.a = alpha;
             draw_line(a.x, a.y, b.x, b.y, 1.6, c);
+        }
+    }
+}
+
+/// Draw a dense set of phase-space points as small dots, filling out the
+/// 2D Liouville torus surface.
+///
+/// Each trajectory contributes a 1D curve; the union of many trajectories at
+/// the same Λ sweeps out the full 2D torus.  In action-angle coordinates the
+/// torus is the flat product S¹ × S¹.  Here we embed it as a *standard donut*
+/// in 3D: the two angle coordinates are the position angle φ₁ = atan2(y, x)
+/// and the velocity angle φ₂ = θ = atan2(vy, vx).  Mapping (φ₁, φ₂) onto a
+/// parametrized torus makes the invariant surface visibly a torus, instead of
+/// the warped/flat-looking surface one gets from the raw (x, y, θ) embedding.
+pub fn draw_phase_points(
+    trajectories: &[Vec<PhasePoint>],
+    cam: &OrbitCamera3,
+    win_w: f32,
+    win_h: f32,
+    is_hyperbola: bool,
+) {
+    // Torus radii — fixed size so it fills the view.
+    let r_major = 1.6;
+    let r_minor = 0.6;
+
+    for traj in trajectories {
+        for pt in traj {
+            let (p, normal) = torus_embed(pt, r_major, r_minor, is_hyperbola);
+            let s = cam.project(p, win_w, win_h);
+            if s.z < -0.1 {
+                continue;
+            }
+
+            // Lambertian shading: brightness ∝ max(0, n · light).  This makes
+            // the 3D curvature of the torus visible instead of a flat color.
+            let light = vec3(0.4, 0.6, 0.7).normalize();
+            let lambert = (normal.dot(light)).max(0.0);
+            let shade = 0.25 + 0.75 * lambert;
+
+            // Depth-based alpha and size
+            let depth = (-s.z).clamp(0.5, 5.0);
+            let alpha = (0.3 + 0.6 * (1.0 - (depth - 0.5) / 4.5)).min(1.0);
+            let radius = 1.8 + 0.8 * (1.0 - (depth - 0.5) / 4.5);
+
+            // Warm base color, scaled by the lighting.
+            let r = (255.0 * shade) as u8;
+            let g = (200.0 * shade) as u8;
+            let b = (110.0 * shade) as u8;
+            draw_circle(s.x, s.y, radius, color_u8!(r, g, b, (alpha * 255.0) as u8));
         }
     }
 }
