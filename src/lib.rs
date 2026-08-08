@@ -2,6 +2,7 @@ pub mod domain;
 pub mod phase3d;
 pub mod presets;
 pub mod quadratic;
+pub mod torus;
 
 pub const A: f32 = 4.0;
 pub const B: f32 = 1.0;
@@ -215,7 +216,7 @@ pub fn dense_caustic_starts(
     }
 }
 
-/// Extract (λ_ellipse, λ_hyperbola) of a confocal-quadrilateral domain.
+/// Extract `(λ_ellipse, λ_hyperbola)` of a confocal-quadrilateral domain.
 /// Returns `None` for non-quadrilaterals (e.g. L-shapes with 6 arcs)
 /// since the simple ellipse/hyperbola test is only valid for quadrilaterals.
 fn confocal_bounds(domain: &domain::Domain) -> Option<(f32, f32)> {
@@ -236,6 +237,21 @@ fn confocal_bounds(domain: &domain::Domain) -> Option<(f32, f32)> {
     match (ell, hyp) {
         (Some(e), Some(h)) if quad_count == 4 => Some((e, h)),
         _ => None,
+    }
+}
+
+/// Torus-mapping bounds `(lam_wall, beta)` for a domain.
+///
+/// * `lam_wall` — `λ₁` of the outer boundary (the ellipse wall).
+/// * `beta` — `λ₂` of the hyperbola walls; `None` means the full ellipse.
+///
+/// For a confocal quadrilateral this is `(λ_ell, λ_hyp)`; for a full ellipse
+/// (no hyperbola walls) it is `(0, None)`.  Non-quadrilaterals (L-shapes) fall
+/// back to the full-ellipse convention.
+pub fn torus_bounds(domain: &domain::Domain) -> (f32, Option<f32>) {
+    match confocal_bounds(domain) {
+        Some((ell, hyp)) => (ell, Some(hyp)),
+        None => (0.0, None),
     }
 }
 

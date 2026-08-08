@@ -3,11 +3,27 @@ use macroquad::prelude::*;
 
 /// A 3D phase space point (x, y, θ/π) where θ = atan2(vy, vx)
 /// is the velocity direction angle, normalized to [-1, 1].
+///
+/// The torus angles `theta1`, `theta2` and `torus_index` are precomputed at
+/// sampling time (once per trajectory, sharing a `TorusCache`) so the renderer
+/// never rebuilds the expensive quadrature splines per point.
 #[derive(Clone, Copy, Debug)]
 pub struct PhasePoint {
     pub x: f32,
     pub y: f32,
-    pub theta: f32, // θ/π ∈ [-1, 1]
+    pub theta: f32,  // θ/π ∈ [-1, 1]
+    pub theta1: f32, // torus phase on the first oval, ∈ [0, 2π)
+    pub theta2: f32, // torus phase on the second oval, ∈ [0, 2π)
+    pub torus_index: u32,
+}
+
+impl PhasePoint {
+    /// Unit velocity direction `(cos θ, sin θ)` reconstructed from `theta`.
+    /// Unit speed is enforced for free, matching the spec's convention.
+    pub fn velocity(&self) -> Vec2 {
+        let th = self.theta * std::f32::consts::PI;
+        vec2(th.cos(), th.sin())
+    }
 }
 
 // ----------------------------------------------------------------
@@ -107,71 +123,29 @@ impl OrbitCamera3 {
 // Phase space sampling
 // ----------------------------------------------------------------
 
-/// Sample phase space points from a billiard trajectory.
-/// For each bounce point, records (x, y, θ) where θ = atan2(vy, vx)
-/// is the velocity direction right after reflection.
-pub fn sample_trajectory_phase(
-    domain: &crate::domain::Domain,
-    p0: Vec2,
-    v0: Vec2,
-    max_steps: usize,
-) -> Vec<PhasePoint> {
-    let mut pts = Vec::with_capacity(max_steps);
-    let mut p = p0;
-    let mut v = v0;
-    for _ in 0..max_steps {
-        let speed = v.length();
-        if speed < 1e-12 {
-            break;
-        }
-        let dir = v / speed;
-        let (_t, idx, hit) = match domain.intersect(p, dir) {
-            Some(r) => r,
-            None => break,
-        };
-        // Record the bounce point: position is hit, velocity is v (just before reflection)
-        let theta = v.y.atan2(v.x) / std::f32::consts::PI;
-        pts.push(PhasePoint {
-            x: hit.x,
-            y: hit.y,
-            theta,
-        });
-        // Reflect and continue
-        v = domain.reflect(hit, v, idx);
-        p = hit + 1e-4 * v.normalize();
-    }
-    pts
-}
-
-/// Sample phase space points from multiple trajectories, one per
-/// start point on the caustic.
-pub fn sample_all_trajectories_phase(
-    domain: &crate::domain::Domain,
-    starts: &[(Vec2, Vec2)],
-    max_steps: usize,
-) -> Vec<Vec<PhasePoint>> {
-    starts
-        .iter()
-        .map(|&(p, v)| sample_trajectory_phase(domain, p, v, max_steps))
-        .collect()
-}
-
 /// Sample a single trajectory densely, recording interior points along each
-/// segment (not just bounce points).
+/// segment (not just bounce points), together with the precomputed torus
+/// angles `(θ₁, θ₂, index)`.
 ///
 /// This is what makes the torus surface look filled in the 3D view: sampling
 /// `per_seg` points along every segment of many trajectories sweeps out the
 /// whole 2D surface instead of leaving sparse dots at the bounces.
+///
+/// The torus mapping uses one shared `TorusCache` for the whole trajectory
+/// (the spec's "precompute per torus, not per sample" rule) so the expensive
+/// quadrature splines are built once, not per point.
 pub fn sample_trajectory_phase_dense(
     domain: &crate::domain::Domain,
     p0: Vec2,
     v0: Vec2,
     max_steps: usize,
     per_seg: usize,
+    bounds: (f32, Option<f32>),
 ) -> Vec<PhasePoint> {
     let mut pts = Vec::new();
     let mut p = p0;
     let mut v = v0;
+    let mut cache = crate::torus::TorusCache::default();
     for _ in 0..max_steps {
         let speed = v.length();
         if speed < 1e-12 {
@@ -186,10 +160,17 @@ pub fn sample_trajectory_phase_dense(
             let f = k as f32 / per_seg as f32;
             let q = p + (hit - p) * f;
             let theta = v.y.atan2(v.x) / std::f32::consts::PI;
+            let (th1, th2, tidx) = crate::torus::to_torus(
+                q.x, q.y, v.x, v.y, A, B, &mut cache, bounds.0, bounds.1, 1e-9,
+            );
+            let tidx = if tidx == u32::MAX { 0 } else { tidx };
             pts.push(PhasePoint {
                 x: q.x,
                 y: q.y,
                 theta,
+                theta1: th1,
+                theta2: th2,
+                torus_index: tidx,
             });
         }
         v = domain.reflect(hit, v, idx);
@@ -283,66 +264,42 @@ fn f_lam(th: f32, pos: Vec2, lam: f32, a: f32, b: f32) -> f32 {
 // 3D drawing helpers
 // ----------------------------------------------------------------
 
-/// Map a phase-space point onto a standard torus embedding and return both the
-/// 3D position and the outward surface normal.
+/// Map a phase-space point onto a Liouville torus (using its precomputed
+/// angles) and return both the 3D position and the outward surface normal.
 ///
-/// The two angle coordinates are the **elliptic coordinates** (μ, ν) of the
-/// point: every (x, y) lies on one confocal ellipse (μ < b) and one confocal
-/// hyperbola (ν > b).  These are the separable coordinates of the elliptic
-/// billiard, so at fixed Λ the pair (μ, ν) fills a genuine 2D rectangle — the
-/// correct torus parametrization.  (Using (atan2(y,x), θ) instead collapses to
-/// a 1D curve at fixed Λ, which is why the torus looked flat/unrecognizable.)
+/// The two angle coordinates are the **phases on the two real ovals** of the
+/// cubic `w² = P(λ) = (a−λ)(b−λ)(λc−λ)` (the Jacobi–Moser picture, see
+/// `docs/thorus_params.md`).  Only these normalize the flow to a straight line
+/// on `[0, 2π)²`; the old linear map of `(μ, ν)` warped the torus.
 ///
-/// The outward normal of the standard torus at (φ₁, φ₂) is:
-///   n = (cos φ₂ · cos φ₁, cos φ₂ · sin φ₁, sin φ₂)
-/// which lets us shade the surface so its 3D curvature is visible.
-fn torus_embed(pt: &PhasePoint, r_major: f32, r_minor: f32, is_hyperbola: bool) -> (Vec3, Vec3) {
-    // Elliptic coordinates (μ, ν) from the confocal family.
-    let (mu, nu) = elliptic_coords(pt.x, pt.y);
-    // Map μ ∈ (−∞, b] onto the first torus angle.
-    let phi1 = normalize_angle(mu, -2.0, B);
-    // The hyperbola coordinate ν ∈ [b, a] only encodes the magnitude.  For a
-    // hyperbola caustic (Λ > B) the two disconnected lobes (left/right
-    // branches) have the SAME ν, so we use the sign of x to place them on
-    // opposite halves of the torus.  For an ellipse caustic (Λ < B) the torus
-    // is a single connected surface, so no sign is needed.
-    let phi2 = if is_hyperbola && pt.x >= 0.0 {
-        normalize_angle(nu, B, A) // right branch → one half
-    } else if is_hyperbola {
-        -normalize_angle(nu, B, A) // left branch → the other half
-    } else {
-        normalize_angle(nu, B, A)
-    };
-    let cos2 = phi2.cos();
-    let (sin1, cos1) = phi1.sin_cos();
-    let pos = vec3(
-        (r_major + r_minor * cos2) * cos1,
-        (r_major + r_minor * cos2) * sin1,
-        r_minor * phi2.sin(),
-    );
-    let normal = vec3(cos2 * cos1, cos2 * sin1, phi2.sin());
-    (pos, normal)
+/// `torus_index` was baked into the point at sampling time; each disconnected
+/// region gets its own torus, offset in space so multiple tori are distinct.
+pub fn torus_embed(pt: &PhasePoint, r_major: f32, r_minor: f32, torus_index: u32) -> (Vec3, Vec3) {
+    let pos = crate::torus::torus_embed(pt.theta1, pt.theta2, r_major, r_minor);
+    let normal = crate::torus::torus_normal(pt.theta1, pt.theta2);
+    // Offset each torus in space so multiple lobes are visually distinct.
+    let offset = torus_index as f32 * 3.0 * r_major;
+    (pos + vec3(offset, 0.0, 0.0), normal)
 }
 
-/// Solve the confocal-family equation for the two elliptic coordinates (μ, ν)
-/// of a point (x, y):  (b−λ)x² + (a−λ)y² = (a−λ)(b−λ).
-fn elliptic_coords(x: f32, y: f32) -> (f32, f32) {
-    let a = A;
-    let b = B;
-    let s = x * x + y * y;
-    let t = b * x * x + a * y * y - a * b;
-    let p = a + b - s;
-    let disc = p * p + 4.0 * t;
-    let sd = disc.max(0.0).sqrt();
-    let lam1 = 0.5 * (p - sd);
-    let lam2 = 0.5 * (p + sd);
-    (lam1, lam2) // μ = lam1 (ellipse), ν = lam2 (hyperbola)
-}
+/// Assign each phase point to a torus ID, one per disconnected region.
+///
+/// The confocal presets are **confocal quadrilaterals** (Case C of the spec):
+///
+/// * A hyperbola caustic (Λ > B) has a single torus → all points get ID 0.
+/// * An ellipse caustic (Λ < B) splits the table into an upper and a lower
+///   accessible region, each its own torus → IDs {0, 1} by `sign(y)`.
+pub fn torus_ids(points: &[[f32; 4]], is_hyperbola: bool) -> Vec<u32> {
+    if is_hyperbola {
+        // Single connected torus.
+        return vec![0; points.len()];
+    }
 
-/// Linearly map a value in [lo, hi] onto the angle range [−π, π].
-fn normalize_angle(v: f32, lo: f32, hi: f32) -> f32 {
-    let t = ((v - lo) / (hi - lo)).clamp(0.0, 1.0);
-    -std::f32::consts::PI + 2.0 * std::f32::consts::PI * t
+    // Case C: two tori distinguished by the sign of y (upper / lower region).
+    points
+        .iter()
+        .map(|q| if q[1] >= 0.0 { 0 } else { 1 })
+        .collect()
 }
 
 /// Draw a set of phase space trajectories as 3D curves on the torus.
@@ -351,7 +308,6 @@ pub fn draw_phase_trajectories(
     cam: &OrbitCamera3,
     win_w: f32,
     win_h: f32,
-    is_hyperbola: bool,
 ) {
     let r_major = 1.6;
     let r_minor = 0.6;
@@ -361,11 +317,12 @@ pub fn draw_phase_trajectories(
             continue;
         }
 
-        // Project all points onto the torus
+        // Project all points onto the torus using the precomputed torus
+        // index (baked in at sampling time).
         let projected: Vec<Vec3> = traj
             .iter()
             .map(|pt| {
-                let (p, _n) = torus_embed(pt, r_major, r_minor, is_hyperbola);
+                let (p, _n) = torus_embed(pt, r_major, r_minor, pt.torus_index);
                 cam.project(p, win_w, win_h)
             })
             .collect();
@@ -407,7 +364,6 @@ pub fn draw_phase_points(
     cam: &OrbitCamera3,
     win_w: f32,
     win_h: f32,
-    is_hyperbola: bool,
 ) {
     // Torus radii — fixed size so it fills the view.
     let r_major = 1.6;
@@ -415,7 +371,7 @@ pub fn draw_phase_points(
 
     for traj in trajectories {
         for pt in traj {
-            let (p, normal) = torus_embed(pt, r_major, r_minor, is_hyperbola);
+            let (p, normal) = torus_embed(pt, r_major, r_minor, pt.torus_index);
             let s = cam.project(p, win_w, win_h);
             if s.z < -0.1 {
                 continue;

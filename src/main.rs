@@ -461,9 +461,8 @@ async fn main() {
 
     // Build dense phase-space trajectories for the 3D torus view.
     // For confocal billiards we densely sample the caustic so the union of
-    // trajectories fills the 2D Liouville torus (in action-angle coordinates
-    // this is the flat product S¹ × S¹; in (x, y, θ) it is a warped surface).
-    // For polyline billiards we just use the single start point.
+    // trajectories fills the 2D Liouville torus.  For polyline billiards we
+    // just use the single start point.
     let build_phase = |domain: &domain::Domain,
                        lam: f32,
                        preset: &presets::Preset|
@@ -473,11 +472,13 @@ async fn main() {
         } else {
             billiards::get_start_points(A, B, lam, domain, false, preset.start_center)
         };
+        let bounds = billiards::torus_bounds(domain);
         // Sample interior points along each segment so the torus surface is
-        // densely filled (not just sparse bounce dots).
+        // densely filled (not just sparse bounce dots).  The torus angles are
+        // computed in here, once per trajectory, sharing a TorusCache.
         starts
             .iter()
-            .map(|&(p, v)| phase3d::sample_trajectory_phase_dense(domain, p, v, 200, 8))
+            .map(|&(p, v)| phase3d::sample_trajectory_phase_dense(domain, p, v, 200, 8, bounds))
             .collect()
     };
 
@@ -646,9 +647,8 @@ async fn main() {
             cam3d.handle_input();
             phase3d::draw_axes(&cam3d, w, h, cache.domain_extent);
             // Dense points fill the 2D Liouville torus surface.
-            let is_hyperbola = second_int > B;
-            phase3d::draw_phase_points(&phase_trajectories, &cam3d, w, h, is_hyperbola);
-            phase3d::draw_phase_trajectories(&phase_trajectories, &cam3d, w, h, is_hyperbola);
+            phase3d::draw_phase_points(&phase_trajectories, &cam3d, w, h);
+            phase3d::draw_phase_trajectories(&phase_trajectories, &cam3d, w, h);
 
             let info = format!(
                 "{}  |  {} = {:.3}  |  {} trajs  |  [P] 2D  |  [A] anim {}  |  right-drag orbit",

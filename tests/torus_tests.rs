@@ -192,10 +192,16 @@ fn assert_is_not_3d_volume(points: &[[f32; 4]], label: &str) {
 /// Verify that the *filled* torus (dense interior sampling, as used in the 3D
 /// view) actually covers a reasonable fraction of the torus surface.
 ///
-/// The torus surface is parametrized by the elliptic coordinates (μ, ν) — the
-/// separable coordinates of the elliptic billiard.  At fixed Λ the pair (μ, ν)
-/// fills a genuine 2D rectangle, so a well-filled torus should cover most of it.
-fn assert_torus_well_filled(points: &[[f32; 4]], label: &str, is_hyperbola: bool) {
+/// The torus surface is parametrized by the torus angles (θ₁, θ₂) of the
+/// spec's §6 — the phases on the two ovals of the cubic.  At fixed Λ the pair
+/// (θ₁, θ₂) fills a genuine 2D rectangle, so a well-filled torus should cover
+/// most of it.
+fn assert_torus_well_filled(
+    points: &[[f32; 4]],
+    label: &str,
+    _is_hyperbola: bool,
+    domain: &domain::Domain,
+) {
     assert!(
         points.len() > 1000,
         "{}: not enough filled points ({}) to assess coverage",
@@ -203,45 +209,34 @@ fn assert_torus_well_filled(points: &[[f32; 4]], label: &str, is_hyperbola: bool
         points.len()
     );
 
-    // Bin the points in the (μ, ν) torus surface coordinates.
-    // For a hyperbola caustic, ν is signed by the sign of x so the two lobes
-    // (left/right branches) land on opposite halves of the torus, matching the
-    // renderer.  For an ellipse caustic the torus is a single surface.
+    // Bin the points in the (θ₁, θ₂) torus surface coordinates, using the same
+    // mapping as the renderer.
     const N: usize = 32;
     let mut bins = [[0u32; N]; N];
-    let mut min_mu = f32::MAX;
-    let mut max_mu = f32::MIN;
-    let mut min_nu = f32::MAX;
-    let mut max_nu = f32::MIN;
+    let mut min_t1 = f32::MAX;
+    let mut max_t1 = f32::MIN;
+    let mut min_t2 = f32::MAX;
+    let mut max_t2 = f32::MIN;
+    let mut mapped = Vec::with_capacity(points.len());
+    let mut cache = billiards::torus::TorusCache::default();
+    let (lam_wall, beta) = billiards::torus_bounds(domain);
     for q in points {
-        let (mu, nu) = to_elliptic(q);
-        let nu_signed = if is_hyperbola && q[0] >= 0.0 {
-            nu
-        } else if is_hyperbola {
-            -nu
-        } else {
-            nu
-        };
-        min_mu = min_mu.min(mu);
-        max_mu = max_mu.max(mu);
-        min_nu = min_nu.min(nu_signed);
-        max_nu = max_nu.max(nu_signed);
+        let (th1, th2, _idx) = billiards::torus::to_torus(
+            q[0], q[1], q[2], q[3], A, B, &mut cache, lam_wall, beta, 1e-9,
+        );
+        mapped.push((th1, th2));
+        min_t1 = min_t1.min(th1);
+        max_t1 = max_t1.max(th1);
+        min_t2 = min_t2.min(th2);
+        max_t2 = max_t2.max(th2);
     }
-    let mu_span = (max_mu - min_mu).max(1e-6);
-    let nu_span = (max_nu - min_nu).max(1e-6);
-    for q in points {
-        let (mu, nu) = to_elliptic(q);
-        let nu_signed = if is_hyperbola && q[0] >= 0.0 {
-            nu
-        } else if is_hyperbola {
-            -nu
-        } else {
-            nu
-        };
-        let i = (((mu - min_mu) / mu_span) * N as f32)
+    let t1_span = (max_t1 - min_t1).max(1e-6);
+    let t2_span = (max_t2 - min_t2).max(1e-6);
+    for (th1, th2) in &mapped {
+        let i = (((th1 - min_t1) / t1_span) * N as f32)
             .floor()
             .clamp(0.0, N as f32 - 1.0) as usize;
-        let j = (((nu_signed - min_nu) / nu_span) * N as f32)
+        let j = (((th2 - min_t2) / t2_span) * N as f32)
             .floor()
             .clamp(0.0, N as f32 - 1.0) as usize;
         bins[i][j] += 1;
@@ -294,6 +289,67 @@ fn sample_filled_torus(domain: &domain::Domain, lam: f32, per_component: usize) 
         all.extend(traj);
     }
     all
+}
+
+/// Split phase points into disconnected regions by the sign of y.
+///
+/// An ellipse caustic in a confocal square (Case C) splits the table into an
+/// upper and a lower accessible region, each its own torus.  A hyperbola
+/// caustic (Case B) has a single torus spanning both y-halves (the orbit
+/// crosses the focal segment).
+fn split_regions(points: &[[f32; 4]]) -> (Vec<[f32; 4]>, Vec<[f32; 4]>) {
+    let mut upper = Vec::new();
+    let mut lower = Vec::new();
+    for q in points {
+        if q[1] >= 0.0 {
+            upper.push(*q);
+        } else {
+            lower.push(*q);
+        }
+    }
+    (upper, lower)
+}
+
+/// Verify that a single region's phase points form a genuine 2D torus in the
+/// elliptic coordinates (μ, ν).  This is the "correct torus" check: the region
+/// must be 2D (not a 1D curve) and must not be empty.
+fn assert_lobe_is_2d_torus(points: &[[f32; 4]], label: &str) {
+    assert!(
+        points.len() > 50,
+        "{}: region has too few points ({}) — torus collapsed or missing",
+        label,
+        points.len()
+    );
+    assert_is_2d_torus(points, label);
+}
+
+/// Verify the number of tori matches the number of disconnected regions.
+///
+/// A hyperbola caustic (Λ > B, Case B) has ONE connected region → ONE torus.
+/// An ellipse caustic in a confocal square (Λ < B, Case C) has TWO regions
+/// (upper / lower, split by the caustic ellipse) → TWO tori.
+fn assert_num_tori(points: &[[f32; 4]], is_hyperbola: bool, label: &str) {
+    let (upper, lower) = split_regions(points);
+    if is_hyperbola {
+        assert!(
+            !upper.is_empty() && !lower.is_empty(),
+            "{}: hyperbola caustic torus should span both y-halves (upper {}, lower {})",
+            label,
+            upper.len(),
+            lower.len()
+        );
+        assert_is_2d_torus(points, label);
+    } else {
+        assert!(
+            !upper.is_empty() && !lower.is_empty(),
+            "{}: ellipse caustic must have TWO regions (upper {}, lower {}), but one is missing",
+            label,
+            upper.len(),
+            lower.len()
+        );
+        assert_lobe_is_2d_torus(&upper, &format!("{} upper region", label));
+        assert_lobe_is_2d_torus(&lower, &format!("{} lower region", label));
+    }
 }
 
 /// Verify the two integrals H and Λ are conserved along a trajectory.
@@ -466,8 +522,75 @@ fn test_filled_torus_covers_surface() {
         }
         let domain = &preset.domain;
         let filled = sample_filled_torus(domain, ellipse_lambda(domain), 24);
-        assert_torus_well_filled(&filled, &format!("{} ellipse", preset.label), false);
+        assert_torus_well_filled(&filled, &format!("{} ellipse", preset.label), false, domain);
         let filled = sample_filled_torus(domain, hyperbola_lambda(domain), 40);
-        assert_torus_well_filled(&filled, &format!("{} hyperbola", preset.label), true);
+        assert_torus_well_filled(
+            &filled,
+            &format!("{} hyperbola", preset.label),
+            true,
+            domain,
+        );
+    }
+}
+
+/// The number of tori must match the number of disconnected caustic regions:
+/// one torus for an ellipse caustic, two tori (left/right lobes) for a
+/// hyperbola caustic.  Each lobe must be a genuine 2D torus, not collapsed.
+#[test]
+fn test_num_tori_matches_regions() {
+    let configs = presets::all_presets();
+    for preset in &configs {
+        if !preset.is_confocal {
+            continue;
+        }
+        let domain = &preset.domain;
+
+        // Ellipse caustic → one torus spanning both x-halves.
+        let cloud = sample_filled_torus(domain, ellipse_lambda(domain), 40);
+        assert_num_tori(&cloud, false, &format!("{} ellipse", preset.label));
+
+        // Hyperbola caustic → two tori (left and right lobes).
+        let cloud = sample_filled_torus(domain, hyperbola_lambda(domain), 40);
+        assert_num_tori(&cloud, true, &format!("{} hyperbola", preset.label));
+    }
+}
+
+/// The *rendered* tori must be distinct objects: one per disconnected region.
+///
+/// This checks the actual torus embedding used by the renderer.  For a
+/// hyperbola caustic there is ONE torus (Case B).  For an ellipse caustic in a
+/// confocal square (Case C) the table splits into an upper and a lower
+/// accessible region, so there are TWO tori (distinguished by `sign(y)`).
+#[test]
+fn test_rendered_tori_are_distinct() {
+    let configs = presets::all_presets();
+    for preset in &configs {
+        if !preset.is_confocal {
+            continue;
+        }
+        let domain = &preset.domain;
+
+        // Ellipse caustic → exactly two tori (upper / lower region).
+        let cloud = sample_filled_torus(domain, ellipse_lambda(domain), 40);
+        let ids = phase3d::torus_ids(&cloud, false);
+        let n0 = ids.iter().filter(|&&i| i == 0).count();
+        let n1 = ids.iter().filter(|&&i| i == 1).count();
+        assert!(
+            n0 > 0 && n1 > 0 && n0 + n1 == cloud.len(),
+            "{} ellipse: expected TWO tori (ids 0 and 1), got {:?}",
+            preset.label,
+            ids
+        );
+
+        // Hyperbola caustic → exactly one torus.
+        let cloud = sample_filled_torus(domain, hyperbola_lambda(domain), 40);
+        let ids = phase3d::torus_ids(&cloud, true);
+        let n_hyper = ids.iter().filter(|&&i| i == 0).count();
+        assert!(
+            n_hyper == cloud.len(),
+            "{} hyperbola: expected ONE torus (all points on torus 0), got ids {:?}",
+            preset.label,
+            ids
+        );
     }
 }
