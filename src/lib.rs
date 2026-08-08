@@ -3,6 +3,7 @@ pub mod phase3d;
 pub mod presets;
 pub mod quadratic;
 pub mod torus;
+pub mod torus_render;
 
 pub const A: f32 = 4.0;
 pub const B: f32 = 1.0;

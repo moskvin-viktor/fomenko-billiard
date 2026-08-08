@@ -448,6 +448,21 @@ async fn main() {
     let mut anim_dir: f32 = 1.0;
     let mut cam3d = phase3d::OrbitCamera3::new();
     let mut phase_trajectories: Vec<Vec<phase3d::PhasePoint>> = Vec::new();
+    let mut torus_render = billiards::torus_render::TorusRender::new();
+
+    // Profiling hook: `--burn N` forces 3D mode, builds the torus, runs N
+    // frames, then exits — so `perf`/flamegraph get a bounded run.
+    let mut burn_frames: Option<u32> = None;
+    for arg in std::env::args().skip(1) {
+        if let Some(n) = arg.strip_prefix("--burn=") {
+            burn_frames = n.parse().ok();
+        } else if arg == "--burn" {
+            burn_frames = Some(300);
+        }
+    }
+    if burn_frames.is_some() {
+        show_3d = true;
+    }
 
     let build_trajectories = |domain: &domain::Domain, lam: f32, preset: &presets::Preset| {
         let starts =
@@ -484,6 +499,13 @@ async fn main() {
 
     let (mut start_points, mut trajectories) =
         build_trajectories(&configs[idx].domain, second_int, &configs[idx]);
+
+    // For `--burn`, build the torus right away so the profile captures the
+    // real per-frame draw cost (an empty torus would make the run trivially
+    // fast and invalidate the comparison).
+    if burn_frames.is_some() {
+        phase_trajectories = build_phase(&configs[idx].domain, second_int, &configs[idx]);
+    }
 
     loop {
         let (w, h) = (screen_width(), screen_height());
@@ -646,9 +668,10 @@ async fn main() {
             // ---- 3D phase space view ----
             cam3d.handle_input();
             phase3d::draw_axes(&cam3d, w, h, cache.domain_extent);
-            // Dense points fill the 2D Liouville torus surface.
-            phase3d::draw_phase_points(&phase_trajectories, &cam3d, w, h);
-            phase3d::draw_phase_trajectories(&phase_trajectories, &cam3d, w, h);
+            // Dense points fill the 2D Liouville torus surface.  Rasterized
+            // into an offscreen target and blitted; re-rasterized only when the
+            // camera or geometry changes.
+            torus_render.draw(&phase_trajectories, &cam3d, w, h);
 
             let info = format!(
                 "{}  |  {} = {:.3}  |  {} trajs  |  [P] 2D  |  [A] anim {}  |  right-drag orbit",
@@ -714,5 +737,12 @@ async fn main() {
         }
 
         next_frame().await;
+
+        if let Some(n) = burn_frames {
+            if n <= 1 {
+                break;
+            }
+            burn_frames = Some(n - 1);
+        }
     }
 }

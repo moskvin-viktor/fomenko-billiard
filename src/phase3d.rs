@@ -117,6 +117,12 @@ impl OrbitCamera3 {
 
         vec3(screen_x, screen_y, sz)
     }
+
+    /// A cheap fingerprint of the camera state, used to detect when the cached
+    /// torus render must be regenerated (orbit/zoom changed).
+    pub fn state_key(&self) -> (f32, f32, f32) {
+        (self.azimuth, self.elevation, self.distance)
+    }
 }
 
 // ----------------------------------------------------------------
