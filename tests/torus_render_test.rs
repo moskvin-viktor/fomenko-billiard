@@ -56,7 +56,7 @@ async fn torus_render_draws_something() {
     let cam = phase3d::OrbitCamera3::new();
 
     let mut render = TorusRender::new();
-    render.draw(&trajectories, &cam, w, h);
+    render.draw(&trajectories, &[], &cam, w, h);
 
     let texture = render.texture().expect("offscreen target texture exists");
     let img = texture.get_texture_data();

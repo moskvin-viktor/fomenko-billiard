@@ -61,6 +61,7 @@ impl TorusRender {
     pub fn draw(
         &mut self,
         trajectories: &[Vec<PhasePoint>],
+        highlights: &[Vec<PhasePoint>],
         cam: &OrbitCamera3,
         win_w: f32,
         win_h: f32,
@@ -99,6 +100,10 @@ impl TorusRender {
                 },
             );
         }
+
+        // Bold red short trajectories on the torus surface, one per torus,
+        // drawn on top of the cached texture each frame (cheap).
+        crate::phase3d::draw_torus_highlights(highlights, cam, win_w, win_h);
     }
 
     /// Rasterize the torus into the offscreen target.

@@ -190,6 +190,57 @@ fn draw_start_arrow(center: Vec2, angle: f32, cam: &Camera, w: f32, h: f32) {
     draw_circle(s1.x, s1.y, 3.5, YELLOW);
 }
 
+/// Draw the first `n_bounces` segments of a trajectory bold red on the
+/// billiard, so one can see exactly where each torus's orbit lives on the
+/// domain itself.
+fn draw_trajectory_red(segs: &[(Vec2, Vec2)], n_bounces: usize, cam: &Camera, w: f32, h: f32) {
+    for &(a, b) in segs.iter().take(n_bounces) {
+        let sa = cam.world_to_screen(a, w, h);
+        let sb = cam.world_to_screen(b, w, h);
+        draw_line(sa.x, sa.y, sb.x, sb.y, 3.0, RED);
+        draw_circle(sa.x, sa.y, 3.5, RED);
+    }
+}
+
+/// One representative trajectory per torus on the billiard, using the same
+/// torus-index rule as the torus mapping (`to_torus`):
+///
+/// * hyperbola caustic / polyline → single torus (key 0);
+/// * confocal quadrilateral + ellipse caustic → two tori by `sign(y)`;
+/// * full-ellipse case (no hyperbola wall, e.g. L-shape) → two tori by the
+///   sign of the angular momentum `x·vy − y·vx`.
+fn one_per_torus(
+    start_points: &[(Vec2, Vec2)],
+    is_confocal: bool,
+    lam: f32,
+    bounds: Option<f32>,
+) -> Vec<usize> {
+    let mut seen: Vec<u32> = Vec::new();
+    let mut out = Vec::new();
+    for (i, &(p, v)) in start_points.iter().enumerate() {
+        let key: u32 = if !is_confocal || lam >= B {
+            0
+        } else if let Some(_beta) = bounds {
+            if p.y >= 0.0 {
+                0
+            } else {
+                1
+            }
+        } else {
+            if p.x * v.y - p.y * v.x > 0.0 {
+                0
+            } else {
+                1
+            }
+        };
+        if !seen.contains(&key) {
+            seen.push(key);
+            out.push(i);
+        }
+    }
+    out
+}
+
 // ----------------------------------------------------------------
 // Second-integral slider range
 // ----------------------------------------------------------------
@@ -448,6 +499,7 @@ async fn main() {
     let mut anim_dir: f32 = 1.0;
     let mut cam3d = phase3d::OrbitCamera3::new();
     let mut phase_trajectories: Vec<Vec<phase3d::PhasePoint>> = Vec::new();
+    let mut torus_highlights: Vec<Vec<phase3d::PhasePoint>> = Vec::new();
     let mut torus_render = billiards::torus_render::TorusRender::new();
 
     // Profiling hook: `--burn N` forces 3D mode, builds the torus, runs N
@@ -497,6 +549,25 @@ async fn main() {
             .collect()
     };
 
+    // Build the red torus highlights: one per torus, traced from the *same*
+    // start point as the trajectory drawn on the 2D billiard, and bounced only
+    // a few times (4 bounces) so the correspondence is easy to see.
+    let build_highlights = |domain: &domain::Domain,
+                            lam: f32,
+                            preset: &presets::Preset|
+     -> Vec<Vec<phase3d::PhasePoint>> {
+        // Same per-torus start points the 2D billiard drew.
+        let starts =
+            billiards::get_start_points(A, B, lam, domain, preset.is_confocal, preset.start_center);
+        let bounds = billiards::torus_bounds(domain);
+        // 4 bounces, 8 interior samples each => a short bold polyline on the torus.
+        starts
+            .iter()
+            .map(|&(p, v)| phase3d::sample_trajectory_phase_dense(domain, p, v, 4, 8, bounds))
+            .filter(|t| !t.is_empty())
+            .collect()
+    };
+
     let (mut start_points, mut trajectories) =
         build_trajectories(&configs[idx].domain, second_int, &configs[idx]);
 
@@ -505,6 +576,7 @@ async fn main() {
     // fast and invalidate the comparison).
     if burn_frames.is_some() {
         phase_trajectories = build_phase(&configs[idx].domain, second_int, &configs[idx]);
+        torus_highlights = build_highlights(&configs[idx].domain, second_int, &configs[idx]);
     }
 
     loop {
@@ -530,6 +602,7 @@ async fn main() {
             show_3d = !show_3d;
             if show_3d {
                 phase_trajectories = build_phase(&preset.domain, second_int, preset);
+                torus_highlights = build_highlights(&preset.domain, second_int, preset);
             }
         }
 
@@ -542,6 +615,8 @@ async fn main() {
             trajectories = t;
             if show_3d {
                 phase_trajectories = build_phase(&configs[idx].domain, second_int, &configs[idx]);
+                torus_highlights =
+                    build_highlights(&configs[idx].domain, second_int, &configs[idx]);
             }
         }
 
@@ -556,6 +631,8 @@ async fn main() {
                 if show_3d {
                     phase_trajectories =
                         build_phase(&configs[idx].domain, second_int, &configs[idx]);
+                    torus_highlights =
+                        build_highlights(&configs[idx].domain, second_int, &configs[idx]);
                 }
             }
             if is_key_pressed(KeyCode::Down) || is_key_pressed(KeyCode::Left) {
@@ -567,6 +644,8 @@ async fn main() {
                 if show_3d {
                     phase_trajectories =
                         build_phase(&configs[idx].domain, second_int, &configs[idx]);
+                    torus_highlights =
+                        build_highlights(&configs[idx].domain, second_int, &configs[idx]);
                 }
             }
         } else {
@@ -578,6 +657,8 @@ async fn main() {
                 if show_3d {
                     phase_trajectories =
                         build_phase(&configs[idx].domain, second_int, &configs[idx]);
+                    torus_highlights =
+                        build_highlights(&configs[idx].domain, second_int, &configs[idx]);
                 }
             }
             if is_key_pressed(KeyCode::Down) || is_key_pressed(KeyCode::Left) {
@@ -588,6 +669,8 @@ async fn main() {
                 if show_3d {
                     phase_trajectories =
                         build_phase(&configs[idx].domain, second_int, &configs[idx]);
+                    torus_highlights =
+                        build_highlights(&configs[idx].domain, second_int, &configs[idx]);
                 }
             }
         }
@@ -604,6 +687,8 @@ async fn main() {
                 if show_3d {
                     phase_trajectories =
                         build_phase(&configs[idx].domain, second_int, &configs[idx]);
+                    torus_highlights =
+                        build_highlights(&configs[idx].domain, second_int, &configs[idx]);
                 }
             }
         }
@@ -659,6 +744,8 @@ async fn main() {
             trajectories = t;
             if show_3d {
                 phase_trajectories = build_phase(&configs[idx].domain, second_int, &configs[idx]);
+                torus_highlights =
+                    build_highlights(&configs[idx].domain, second_int, &configs[idx]);
             }
         }
 
@@ -671,7 +758,7 @@ async fn main() {
             // Dense points fill the 2D Liouville torus surface.  Rasterized
             // into an offscreen target and blitted; re-rasterized only when the
             // camera or geometry changes.
-            torus_render.draw(&phase_trajectories, &cam3d, w, h);
+            torus_render.draw(&phase_trajectories, &torus_highlights, &cam3d, w, h);
 
             let info = format!(
                 "{}  |  {} = {:.3}  |  {} trajs  |  [P] 2D  |  [A] anim {}  |  right-drag orbit",
@@ -704,6 +791,13 @@ async fn main() {
             for traj in &trajectories {
                 draw_trajectory(traj, cam, w, h);
             }
+            // Highlight one short (few-bounce) red trajectory per torus so one
+            // can see exactly where each torus's orbit lives on the billiard.
+            let bounds = billiards::torus_bounds(&preset.domain).1;
+            let picks = one_per_torus(&start_points, preset.is_confocal, second_int, bounds);
+            for &i in &picks {
+                draw_trajectory_red(&trajectories[i], 4, cam, w, h);
+            }
             for &(p, _) in &start_points {
                 draw_start_marker(p, cam, w, h);
             }
@@ -711,7 +805,7 @@ async fn main() {
             let total: usize = trajectories.iter().map(|t| t.len()).sum();
             let info =
                 format!(
-                "{}  |  {} = {:.3}  |  {} trajs, {} bounces  |  ↑↓ adjust  |  [A] anim {}  |  [P] 3D  |  Tab next",
+                "{}  |  {} = {:.3}  |  {} trajs, {} bounces  |  4 bounce/torus red  |  ↑↓  |  [A] anim {}  |  [P] 3D  |  Tab next",
                 preset.label, preset.second_integral_label, second_int, start_points.len(), total,
                 if animate { "on" } else { "off" },
             );

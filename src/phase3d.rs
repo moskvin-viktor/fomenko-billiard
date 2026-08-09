@@ -308,6 +308,64 @@ pub fn torus_ids(points: &[[f32; 4]], is_hyperbola: bool) -> Vec<u32> {
         .collect()
 }
 
+/// Draw short, bold red trajectories on the torus so one can see where each
+/// torus's orbit actually lives on the 3D torus surface.
+///
+/// Each entry is the phase-space trace (already limited to a few bounces) of
+/// one trajectory per disconnected torus, sampled from the *same* start point
+/// as the trajectory drawn on the 2D billiard, so the two views correspond.
+pub fn draw_torus_highlights(
+    trajectories: &[Vec<PhasePoint>],
+    cam: &OrbitCamera3,
+    win_w: f32,
+    win_h: f32,
+) {
+    let r_major = 1.6;
+    let r_minor = 0.6;
+
+    // One representative per distinct torus index (trajectories never cross
+    // between tori — each `torus_index` is a disconnected accessible region).
+    let mut seen: Vec<u32> = Vec::new();
+    for traj in trajectories {
+        if traj.is_empty() {
+            continue;
+        }
+        let idx = traj[0].torus_index;
+        if seen.contains(&idx) {
+            continue;
+        }
+        seen.push(idx);
+
+        // Project each sample onto its torus; `torus_index` was baked in at
+        // sampling time.
+        let projected: Vec<Vec3> = traj
+            .iter()
+            .map(|pt| {
+                let (p, _n) = torus_embed(pt, r_major, r_minor, pt.torus_index);
+                cam.project(p, win_w, win_h)
+            })
+            .collect();
+
+        // Bold red polyline through the consecutive samples.
+        for win in projected.windows(2) {
+            let a = win[0];
+            let b = win[1];
+            if a.z < -0.1 || b.z < -0.1 {
+                continue;
+            }
+            draw_line(a.x, a.y, b.x, b.y, 4.0, RED);
+        }
+
+        // Bright marker dots so the short segment is easy to spot.
+        for s in &projected {
+            if s.z < -0.1 {
+                continue;
+            }
+            draw_circle(s.x, s.y, 4.0, RED);
+        }
+    }
+}
+
 /// Draw a set of phase space trajectories as 3D curves on the torus.
 pub fn draw_phase_trajectories(
     trajectories: &[Vec<PhasePoint>],
