@@ -1,4 +1,4 @@
-use billiards::{domain, phase3d, presets, quadratic, A, B};
+use billiards::{domain, phase3d, presets, quadratic, TorusRegime, A, B};
 use macroquad::prelude::*;
 use std::cmp::Ordering;
 
@@ -203,36 +203,12 @@ fn draw_trajectory_red(segs: &[(Vec2, Vec2)], n_bounces: usize, cam: &Camera, w:
 }
 
 /// One representative trajectory per torus on the billiard, using the same
-/// torus-index rule as the torus mapping (`to_torus`):
-///
-/// * hyperbola caustic / polyline → single torus (key 0);
-/// * confocal quadrilateral + ellipse caustic → two tori by `sign(y)`;
-/// * full-ellipse case (no hyperbola wall, e.g. L-shape) → two tori by the
-///   sign of the angular momentum `x·vy − y·vx`.
-fn one_per_torus(
-    start_points: &[(Vec2, Vec2)],
-    is_confocal: bool,
-    lam: f32,
-    bounds: Option<f32>,
-) -> Vec<usize> {
+/// torus-index rule as the torus mapping (`TorusRegime`).
+fn one_per_torus(start_points: &[(Vec2, Vec2)], regime: TorusRegime) -> Vec<usize> {
     let mut seen: Vec<u32> = Vec::new();
     let mut out = Vec::new();
     for (i, &(p, v)) in start_points.iter().enumerate() {
-        let key: u32 = if !is_confocal || lam >= B {
-            0
-        } else if let Some(_beta) = bounds {
-            if p.y >= 0.0 {
-                0
-            } else {
-                1
-            }
-        } else {
-            if p.x * v.y - p.y * v.x > 0.0 {
-                0
-            } else {
-                1
-            }
-        };
+        let key = regime.index_of(p.x, p.y, v.x, v.y);
         if !seen.contains(&key) {
             seen.push(key);
             out.push(i);
@@ -441,8 +417,8 @@ impl Slider {
         let value_text = match range {
             SecondIntegralRange::Angle => format!("{:.3}", value),
             SecondIntegralRange::Confocal { .. } => {
-                let caustic_type = if value < B { "ellipse" } else { "hyperbola" };
-                format!("{:.3} ({})", value, caustic_type)
+                let caustic_label = if value < B { "ellipse" } else { "hyperbola" };
+                format!("{:.3} ({})", value, caustic_label)
             }
         };
         let info = format!("{} = {}", label, value_text);
@@ -483,6 +459,92 @@ impl Slider {
 // ----------------------------------------------------------------
 // Entry point
 // ----------------------------------------------------------------
+// ----------------------------------------------------------------
+// Rebuildable derived-view state
+// ----------------------------------------------------------------
+
+/// Everything that must be recomputed together whenever the domain, the second
+/// integral, or the 3D toggle changes. Grouping them into one type makes the
+/// "rebuild on change" invariant explicit instead of a 3-line copy-paste
+/// repeated at every input handler.
+struct ViewState {
+    /// Start points used to draw the 2D billiard trajectories.
+    start_points: Vec<(Vec2, Vec2)>,
+    /// 2D billiard trajectories: each is `(from, to)` per bounce.
+    trajectories: Vec<Vec<(Vec2, Vec2)>>,
+    /// Dense phase-space trajectories filling the 3D Liouville torus.
+    /// Empty unless the 3D view is active (or `--burn` forced it).
+    phase_trajectories: Vec<Vec<phase3d::PhasePoint>>,
+    /// Short (few-bounce) phase-space highlights drawn red on the torus.
+    torus_highlights: Vec<Vec<phase3d::PhasePoint>>,
+}
+
+impl ViewState {
+    fn new(idx: usize, configs: &[presets::Preset], second_int: f32, show_3d: bool) -> Self {
+        let mut s = Self {
+            start_points: Vec::new(),
+            trajectories: Vec::new(),
+            phase_trajectories: Vec::new(),
+            torus_highlights: Vec::new(),
+        };
+        s.rebuild(idx, configs, second_int, show_3d);
+        s
+    }
+
+    /// Recompute the 2D trajectories *and* (if enabled) the 3D torus + red
+    /// highlights for the given preset and second-integral value.
+    fn rebuild(&mut self, idx: usize, configs: &[presets::Preset], second_int: f32, show_3d: bool) {
+        let preset = &configs[idx];
+        let domain = &preset.domain;
+
+        // 2D billiard: one trajectory per start point on the caustic.
+        let starts = billiards::get_start_points(
+            A,
+            B,
+            second_int,
+            domain,
+            preset.is_confocal,
+            preset.start_center,
+        );
+        self.start_points = starts.clone();
+        self.trajectories = starts
+            .iter()
+            .map(|&(p, v)| domain.trace(p, v, 300))
+            .collect();
+
+        if show_3d {
+            // Dense fill of the 3D Liouville torus.  Densely sample the caustic
+            // so the union of trajectories sweeps out the full torus surface; a
+            // polyline domain has only its single start point.
+            let bounds = billiards::torus_bounds(domain);
+            let dense_starts = if preset.is_confocal {
+                billiards::dense_caustic_starts(A, B, second_int, domain, 24)
+            } else {
+                billiards::get_start_points(A, B, second_int, domain, false, preset.start_center)
+            };
+            self.phase_trajectories = dense_starts
+                .iter()
+                .map(|&(p, v)| phase3d::sample_trajectory_phase_dense(domain, p, v, 200, 8, bounds))
+                .collect();
+
+            // Red highlights on the torus: short (4-bounce) phase traces from
+            // the *same* start points the 2D view drew, so both views agree on
+            // where each torus lives.
+            self.torus_highlights = starts
+                .iter()
+                .map(|&(p, v)| phase3d::sample_trajectory_phase_dense(domain, p, v, 4, 8, bounds))
+                .filter(|t| !t.is_empty())
+                .collect();
+        } else {
+            self.phase_trajectories.clear();
+            self.torus_highlights.clear();
+        }
+    }
+}
+
+// ----------------------------------------------------------------
+// Entry point
+// ----------------------------------------------------------------
 #[macroquad::main("Mathematical Billiards")]
 async fn main() {
     let configs = presets::all_presets();
@@ -498,8 +560,7 @@ async fn main() {
     let mut animate = false;
     let mut anim_dir: f32 = 1.0;
     let mut cam3d = phase3d::OrbitCamera3::new();
-    let mut phase_trajectories: Vec<Vec<phase3d::PhasePoint>> = Vec::new();
-    let mut torus_highlights: Vec<Vec<phase3d::PhasePoint>> = Vec::new();
+    let mut view = ViewState::new(idx, &configs, second_int, show_3d);
     let mut torus_render = billiards::torus_render::TorusRender::new();
 
     // Profiling hook: `--burn N` forces 3D mode, builds the torus, runs N
@@ -514,69 +575,7 @@ async fn main() {
     }
     if burn_frames.is_some() {
         show_3d = true;
-    }
-
-    let build_trajectories = |domain: &domain::Domain, lam: f32, preset: &presets::Preset| {
-        let starts =
-            billiards::get_start_points(A, B, lam, domain, preset.is_confocal, preset.start_center);
-        let trajs: Vec<Vec<(Vec2, Vec2)>> = starts
-            .iter()
-            .map(|(p, v)| domain.trace(*p, *v, 300))
-            .collect();
-        (starts, trajs)
-    };
-
-    // Build dense phase-space trajectories for the 3D torus view.
-    // For confocal billiards we densely sample the caustic so the union of
-    // trajectories fills the 2D Liouville torus.  For polyline billiards we
-    // just use the single start point.
-    let build_phase = |domain: &domain::Domain,
-                       lam: f32,
-                       preset: &presets::Preset|
-     -> Vec<Vec<phase3d::PhasePoint>> {
-        let starts = if preset.is_confocal {
-            billiards::dense_caustic_starts(A, B, lam, domain, 24)
-        } else {
-            billiards::get_start_points(A, B, lam, domain, false, preset.start_center)
-        };
-        let bounds = billiards::torus_bounds(domain);
-        // Sample interior points along each segment so the torus surface is
-        // densely filled (not just sparse bounce dots).  The torus angles are
-        // computed in here, once per trajectory, sharing a TorusCache.
-        starts
-            .iter()
-            .map(|&(p, v)| phase3d::sample_trajectory_phase_dense(domain, p, v, 200, 8, bounds))
-            .collect()
-    };
-
-    // Build the red torus highlights: one per torus, traced from the *same*
-    // start point as the trajectory drawn on the 2D billiard, and bounced only
-    // a few times (4 bounces) so the correspondence is easy to see.
-    let build_highlights = |domain: &domain::Domain,
-                            lam: f32,
-                            preset: &presets::Preset|
-     -> Vec<Vec<phase3d::PhasePoint>> {
-        // Same per-torus start points the 2D billiard drew.
-        let starts =
-            billiards::get_start_points(A, B, lam, domain, preset.is_confocal, preset.start_center);
-        let bounds = billiards::torus_bounds(domain);
-        // 4 bounces, 8 interior samples each => a short bold polyline on the torus.
-        starts
-            .iter()
-            .map(|&(p, v)| phase3d::sample_trajectory_phase_dense(domain, p, v, 4, 8, bounds))
-            .filter(|t| !t.is_empty())
-            .collect()
-    };
-
-    let (mut start_points, mut trajectories) =
-        build_trajectories(&configs[idx].domain, second_int, &configs[idx]);
-
-    // For `--burn`, build the torus right away so the profile captures the
-    // real per-frame draw cost (an empty torus would make the run trivially
-    // fast and invalidate the comparison).
-    if burn_frames.is_some() {
-        phase_trajectories = build_phase(&configs[idx].domain, second_int, &configs[idx]);
-        torus_highlights = build_highlights(&configs[idx].domain, second_int, &configs[idx]);
+        view.rebuild(idx, &configs, second_int, show_3d);
     }
 
     loop {
@@ -600,79 +599,31 @@ async fn main() {
         // Toggle 3D
         if is_key_pressed(KeyCode::P) {
             show_3d = !show_3d;
-            if show_3d {
-                phase_trajectories = build_phase(&preset.domain, second_int, preset);
-                torus_highlights = build_highlights(&preset.domain, second_int, preset);
-            }
+            view.rebuild(idx, &configs, second_int, show_3d);
         }
 
         // Tab / Space: next preset
         if is_key_pressed(KeyCode::Tab) || is_key_pressed(KeyCode::Space) {
             idx = (idx + 1) % configs.len();
             second_int = 0.2;
-            let (s, t) = build_trajectories(&configs[idx].domain, second_int, &configs[idx]);
-            start_points = s;
-            trajectories = t;
-            if show_3d {
-                phase_trajectories = build_phase(&configs[idx].domain, second_int, &configs[idx]);
-                torus_highlights =
-                    build_highlights(&configs[idx].domain, second_int, &configs[idx]);
-            }
+            view.rebuild(idx, &configs, second_int, show_3d);
         }
 
-        // Keyboard: adjust second integral
-        if configs[idx].is_confocal {
-            if is_key_pressed(KeyCode::Up) || is_key_pressed(KeyCode::Right) {
-                let next = clamp_lambda(second_int + 0.05, second_int, &configs[idx].domain);
-                second_int = next;
-                let (s, t) = build_trajectories(&configs[idx].domain, second_int, &configs[idx]);
-                start_points = s;
-                trajectories = t;
-                if show_3d {
-                    phase_trajectories =
-                        build_phase(&configs[idx].domain, second_int, &configs[idx]);
-                    torus_highlights =
-                        build_highlights(&configs[idx].domain, second_int, &configs[idx]);
-                }
-            }
-            if is_key_pressed(KeyCode::Down) || is_key_pressed(KeyCode::Left) {
-                let next = clamp_lambda(second_int - 0.05, second_int, &configs[idx].domain);
-                second_int = next;
-                let (s, t) = build_trajectories(&configs[idx].domain, second_int, &configs[idx]);
-                start_points = s;
-                trajectories = t;
-                if show_3d {
-                    phase_trajectories =
-                        build_phase(&configs[idx].domain, second_int, &configs[idx]);
-                    torus_highlights =
-                        build_highlights(&configs[idx].domain, second_int, &configs[idx]);
-                }
-            }
+        // Keyboard: adjust second integral (↑/→ step, ↓/← step back).
+        let step = if is_key_pressed(KeyCode::Up) || is_key_pressed(KeyCode::Right) {
+            0.05
+        } else if is_key_pressed(KeyCode::Down) || is_key_pressed(KeyCode::Left) {
+            -0.05
         } else {
-            if is_key_pressed(KeyCode::Up) || is_key_pressed(KeyCode::Right) {
-                second_int = (second_int + 0.05).clamp(-1.0, 1.0);
-                let (s, t) = build_trajectories(&configs[idx].domain, second_int, &configs[idx]);
-                start_points = s;
-                trajectories = t;
-                if show_3d {
-                    phase_trajectories =
-                        build_phase(&configs[idx].domain, second_int, &configs[idx]);
-                    torus_highlights =
-                        build_highlights(&configs[idx].domain, second_int, &configs[idx]);
-                }
-            }
-            if is_key_pressed(KeyCode::Down) || is_key_pressed(KeyCode::Left) {
-                second_int = (second_int - 0.05).clamp(-1.0, 1.0);
-                let (s, t) = build_trajectories(&configs[idx].domain, second_int, &configs[idx]);
-                start_points = s;
-                trajectories = t;
-                if show_3d {
-                    phase_trajectories =
-                        build_phase(&configs[idx].domain, second_int, &configs[idx]);
-                    torus_highlights =
-                        build_highlights(&configs[idx].domain, second_int, &configs[idx]);
-                }
-            }
+            0.0
+        };
+        if step != 0.0 {
+            second_int = if preset.is_confocal {
+                clamp_lambda(second_int + step, second_int, &preset.domain)
+            } else {
+                (second_int + step).clamp(-1.0, 1.0)
+            };
+            view.rebuild(idx, &configs, second_int, show_3d);
         }
 
         // Slider input
@@ -681,15 +632,7 @@ async fn main() {
         {
             if (new_val - second_int).abs() > 0.0001 {
                 second_int = new_val;
-                let (s, t) = build_trajectories(&configs[idx].domain, second_int, &configs[idx]);
-                start_points = s;
-                trajectories = t;
-                if show_3d {
-                    phase_trajectories =
-                        build_phase(&configs[idx].domain, second_int, &configs[idx]);
-                    torus_highlights =
-                        build_highlights(&configs[idx].domain, second_int, &configs[idx]);
-                }
+                view.rebuild(idx, &configs, second_int, show_3d);
             }
         }
 
@@ -739,14 +682,7 @@ async fn main() {
                 second_int = next;
             }
 
-            let (s, t) = build_trajectories(&configs[idx].domain, second_int, &configs[idx]);
-            start_points = s;
-            trajectories = t;
-            if show_3d {
-                phase_trajectories = build_phase(&configs[idx].domain, second_int, &configs[idx]);
-                torus_highlights =
-                    build_highlights(&configs[idx].domain, second_int, &configs[idx]);
-            }
+            view.rebuild(idx, &configs, second_int, show_3d);
         }
 
         clear_background(BG);
@@ -758,14 +694,20 @@ async fn main() {
             // Dense points fill the 2D Liouville torus surface.  Rasterized
             // into an offscreen target and blitted; re-rasterized only when the
             // camera or geometry changes.
-            torus_render.draw(&phase_trajectories, &torus_highlights, &cam3d, w, h);
+            torus_render.draw(
+                &view.phase_trajectories,
+                &view.torus_highlights,
+                &cam3d,
+                w,
+                h,
+            );
 
             let info = format!(
                 "{}  |  {} = {:.3}  |  {} trajs  |  [P] 2D  |  [A] anim {}  |  right-drag orbit",
                 preset.label,
                 preset.second_integral_label,
                 second_int,
-                phase_trajectories.len(),
+                view.phase_trajectories.len(),
                 if animate { "on" } else { "off" },
             );
             draw_text(&info, 12.0, 28.0, 18.0, color_u8!(200, 200, 220, 220));
@@ -788,25 +730,29 @@ async fn main() {
                 draw_start_arrow(preset.start_center, angle, cam, w, h);
             }
 
-            for traj in &trajectories {
+            for traj in &view.trajectories {
                 draw_trajectory(traj, cam, w, h);
             }
             // Highlight one short (few-bounce) red trajectory per torus so one
             // can see exactly where each torus's orbit lives on the billiard.
-            let bounds = billiards::torus_bounds(&preset.domain).1;
-            let picks = one_per_torus(&start_points, preset.is_confocal, second_int, bounds);
+            let regime = TorusRegime::from_value(
+                preset.is_confocal,
+                second_int,
+                billiards::torus_bounds(&preset.domain).1,
+            );
+            let picks = one_per_torus(&view.start_points, regime);
             for &i in &picks {
-                draw_trajectory_red(&trajectories[i], 4, cam, w, h);
+                draw_trajectory_red(&view.trajectories[i], 4, cam, w, h);
             }
-            for &(p, _) in &start_points {
+            for &(p, _) in &view.start_points {
                 draw_start_marker(p, cam, w, h);
             }
 
-            let total: usize = trajectories.iter().map(|t| t.len()).sum();
+            let total: usize = view.trajectories.iter().map(|t| t.len()).sum();
             let info =
                 format!(
                 "{}  |  {} = {:.3}  |  {} trajs, {} bounces  |  4 bounce/torus red  |  ↑↓  |  [A] anim {}  |  [P] 3D  |  Tab next",
-                preset.label, preset.second_integral_label, second_int, start_points.len(), total,
+                preset.label, preset.second_integral_label, second_int, view.start_points.len(), total,
                 if animate { "on" } else { "off" },
             );
             draw_text(&info, 12.0, 28.0, 18.0, color_u8!(200, 200, 220, 220));

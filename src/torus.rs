@@ -16,13 +16,52 @@ use macroquad::prelude::*;
 // Coordinates
 // ---------------------------------------------------------------------------
 
+/// The confocal family `(a, b)` the whole module works in.  Every quadric,
+/// phase-space function and torus map lives in one such family, so threading a
+/// single value instead of two scalars cuts the noise on every signature.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ConfocalParams {
+    pub a: f32,
+    pub b: f32,
+}
+
+impl ConfocalParams {
+    pub fn new(a: f32, b: f32) -> Self {
+        Self { a, b }
+    }
+
+    /// The confocal family in which every billiard in this crate lives
+    /// (`crate::A`, `crate::B`).
+    pub fn standard() -> Self {
+        Self::new(crate::A, crate::B)
+    }
+}
+
+/// A point in phase space: position `(x, y)` and velocity `(vx, vy)`.
+/// Used so sampled points are not passed as a jumble of positional scalars.
+#[derive(Clone, Copy, Debug)]
+pub struct PhaseSample {
+    pub x: f32,
+    pub y: f32,
+    pub vx: f32,
+    pub vy: f32,
+}
+
+impl PhaseSample {
+    pub fn new(x: f32, y: f32, vx: f32, vy: f32) -> Self {
+        Self { x, y, vx, vy }
+    }
+}
+
 /// Confocal coordinates `(λ₁, λ₂)` with `λ₁ ≤ b ≤ λ₂ ≤ a`, as roots of
 /// `λ² − (a + b − x² − y²)λ + (ab − bx² − ay²) = 0`.
 ///
 /// Sign-safe near the foci, where the discriminant `(λ₂ − λ₁)²` vanishes:
 /// compute the larger-magnitude root by the standard formula and get the
 /// other from the product `q / λ_big`.
-pub fn confocal(x: f32, y: f32, a: f32, b: f32) -> (f32, f32) {
+pub fn confocal(x: f32, y: f32, cf: &ConfocalParams) -> (f32, f32) {
+    let a = cf.a;
+    let b = cf.b;
     let p = a + b - x * x - y * y; // λ₁ + λ₂
     let q = a * b - b * x * x - a * y * y; // λ₁ · λ₂
     let disc = (p * p - 4.0 * q).max(0.0); // (λ₂ − λ₁)²
@@ -40,36 +79,29 @@ pub fn confocal(x: f32, y: f32, a: f32, b: f32) -> (f32, f32) {
 }
 
 /// Caustic parameter `λc`.  Normalizes `v`, so any speed is fine.
-pub fn caustic(x: f32, y: f32, vx: f32, vy: f32, a: f32, b: f32) -> f32 {
-    let n = (vx * vx + vy * vy).sqrt();
-    let (vx, vy) = (vx / n, vy / n);
-    let l = x * vy - y * vx;
-    b - l * l + (a - b) * vy * vy
+pub fn caustic(s: &PhaseSample, cf: &ConfocalParams) -> f32 {
+    let n = (s.vx * s.vx + s.vy * s.vy).sqrt();
+    let (vx, vy) = (s.vx / n, s.vy / n);
+    let l = s.x * vy - s.y * vx;
+    cf.b - l * l + (cf.a - cf.b) * vy * vy
 }
 
 /// Unfolded angle around the ellipse `λ = λ₁`.  Exact:
 /// `x = √(a − λ₁) cos ν`, `y = √(b − λ₁) sin ν`.
-pub fn nu_angle(x: f32, y: f32, lam1: f32, a: f32, b: f32) -> f32 {
-    let cx = (a - lam1).max(1e-30).sqrt();
-    let cy = (b - lam1).max(1e-30).sqrt();
+pub fn nu_angle(x: f32, y: f32, lam1: f32, cf: &ConfocalParams) -> f32 {
+    let cx = (cf.a - lam1).max(1e-30).sqrt();
+    let cy = (cf.b - lam1).max(1e-30).sqrt();
     (y / cy).atan2(x / cx)
 }
 
 /// Time derivatives of the confocal coordinates, by implicit differentiation
 /// of the quadratic — no square roots, no branch ambiguity.
-pub fn lam_dots(
-    x: f32,
-    y: f32,
-    vx: f32,
-    vy: f32,
-    lam1: f32,
-    lam2: f32,
-    a: f32,
-    b: f32,
-) -> (f32, f32) {
+pub fn lam_dots(s: &PhaseSample, lam1: f32, lam2: f32, cf: &ConfocalParams) -> (f32, f32) {
+    let a = cf.a;
+    let b = cf.b;
     let d = lam1 - lam2;
-    let d1 = 2.0 * (x * (b - lam1) * vx + y * (a - lam1) * vy) / d;
-    let d2 = -2.0 * (x * (b - lam2) * vx + y * (a - lam2) * vy) / d;
+    let d1 = 2.0 * (s.x * (b - lam1) * s.vx + s.y * (a - lam1) * s.vy) / d;
+    let d2 = -2.0 * (s.x * (b - lam2) * s.vx + s.y * (a - lam2) * s.vy) / d;
     (d1, d2)
 }
 
@@ -272,99 +304,144 @@ pub struct TorusCache {
     l2: Option<Libration>,
 }
 
+/// All the per-trajectory context `to_torus` needs, bundled so the hot mapping
+/// takes two arguments instead of ten and the domain-shape parameters are never
+/// re-derived or passed individually.
+pub struct TorusParams<'a> {
+    /// The confocal family `(a, b)`.
+    pub confocal: &'a ConfocalParams,
+    /// `λ₁` of the outer boundary (0 for the base ellipse).
+    pub lam_wall: f32,
+    /// `λ₂` of the hyperbola walls; `None` means the full ellipse.
+    pub beta: Option<f32>,
+    /// Separatrix tolerance for `|λc − b|`.
+    pub sep_eps: f32,
+    /// Reused quadrature cache (one per trajectory).
+    pub cache: &'a mut TorusCache,
+}
+
 /// Map one phase-space sample to `(θ₁, θ₂, torus_index)`.
 ///
-/// * `lam_wall` — `λ₁` of the outer boundary (0 for the base ellipse).
-/// * `beta` — `λ₂` of the hyperbola walls; `None` means the full ellipse.
-/// * `cache` — reused across samples of the SAME trajectory.
-pub fn to_torus(
-    x: f32,
-    y: f32,
-    vx: f32,
-    vy: f32,
-    a: f32,
-    b: f32,
-    cache: &mut TorusCache,
-    lam_wall: f32,
-    beta: Option<f32>,
-    sep_eps: f32,
-) -> (f32, f32, u32) {
-    let n = (vx * vx + vy * vy).sqrt();
-    let (vx, vy) = (vx / n, vy / n);
-    let (lam1, lam2) = confocal(x, y, a, b);
-    let lc = caustic(x, y, vx, vy, a, b);
-    let (d1, d2) = lam_dots(x, y, vx, vy, lam1, lam2, a, b);
-    let roots = [a, b, lc];
+/// `params` carries the confocal family, the domain-shape parameters and the
+/// per-trajectory cache, so the signature stays small and the expensive
+/// `Libration` splines are built once per trajectory rather than per sample.
+pub fn to_torus(s: &PhaseSample, params: &mut TorusParams) -> (f32, f32, u32) {
+    let cf = params.confocal;
+    let (lam1, lam2) = confocal(s.x, s.y, cf);
+    let lc = caustic(s, cf);
+    let (d1, d2) = lam_dots(s, lam1, lam2, cf);
 
-    if (lc - b).abs() < sep_eps {
-        // Separatrix: the torus degenerates here.  Return a sentinel index.
+    // Separatrix: the torus degenerates here.  Return a sentinel index.
+    if (lc - cf.b).abs() < params.sep_eps {
         return (0.0, 0.0, u32::MAX);
     }
 
-    // ---------------- elliptic caustic ----------------
-    if lc < b {
-        if cache.l1.is_none() {
-            cache.l1 = Some(Libration::new(lam_wall, lc, roots, 512));
-        }
-        let l1 = cache.l1.as_ref().unwrap();
-        let th1 = l1.theta(lam1, d1 > 0.0);
-
-        match beta {
-            None => {
-                // Case A — ν circulates.
-                let th2 = nu_angle(x, y, lam1, a, b).rem_euclid(2.0 * std::f32::consts::PI);
-                let idx = if x * vy - y * vx > 0.0 { 0 } else { 1 };
-                (th1, th2, idx)
-            }
-            Some(beta) => {
-                // Case C — folded libration.
-                if cache.l2.is_none() {
-                    cache.l2 = Some(Libration::new(beta, a, roots, 512));
-                }
-                let l2 = cache.l2.as_ref().unwrap();
-                let tau = if x >= 0.0 { 1.0 } else { -1.0 };
-                let u2 = l2.w_full - tau * l2.tail(lam2);
-                let frac = std::f32::consts::PI * u2 / (2.0 * l2.w_full);
-                let th2 = if tau * d2 > 0.0 {
-                    frac
-                } else {
-                    2.0 * std::f32::consts::PI - frac
-                };
-                let idx = if y >= 0.0 { 0 } else { 1 };
-                (th1, th2, idx)
-            }
-        }
-    } else {
-        // ---------------- hyperbolic caustic: both coords fold ----------------
-        if cache.l1.is_none() {
-            cache.l1 = Some(Libration::new(lam_wall, b, roots, 512));
-        }
-        if cache.l2.is_none() {
-            cache.l2 = Some(Libration::new(lc, a, roots, 512));
-        }
-        let h1 = cache.l1.as_ref().unwrap();
-        let h2 = cache.l2.as_ref().unwrap();
-
-        let sig = if y >= 0.0 { 1.0 } else { -1.0 };
-        let u1 = h1.w_full + sig * h1.tail(lam1);
-        let f1 = std::f32::consts::PI * u1 / (2.0 * h1.w_full);
-        let th1 = if -sig * d1 > 0.0 {
-            f1
-        } else {
-            2.0 * std::f32::consts::PI - f1
-        };
-
-        let tau = if x >= 0.0 { 1.0 } else { -1.0 };
-        let u2 = h2.w_full - tau * h2.tail(lam2);
-        let f2 = std::f32::consts::PI * u2 / (2.0 * h2.w_full);
-        let th2 = if tau * d2 > 0.0 {
-            f2
-        } else {
-            2.0 * std::f32::consts::PI - f2
-        };
-
-        (th1, th2, 0)
+    match params.beta {
+        None if lc < cf.b => elliptic_full_ellipse(params, s, lam1, lc, d1),
+        Some(_) if lc < cf.b => elliptic_confocal_square(params, s, lam1, lam2, lc, d2),
+        _ => hyperbolic(params, s, lam1, lam2, lc, d1, d2),
     }
+}
+
+/// Case A — elliptic caustic on a full ellipse (no hyperbola walls): `β = None`.
+/// `ν` circulates and the torus splits by the sign of the angular momentum.
+fn elliptic_full_ellipse(
+    params: &mut TorusParams,
+    s: &PhaseSample,
+    lam1: f32,
+    lc: f32,
+    d1: f32,
+) -> (f32, f32, u32) {
+    let cf = params.confocal;
+    let roots = [cf.a, cf.b, lc];
+    if params.cache.l1.is_none() {
+        params.cache.l1 = Some(Libration::new(params.lam_wall, lc, roots, 512));
+    }
+    let l1 = params.cache.l1.as_ref().unwrap();
+    let th1 = l1.theta(lam1, d1 > 0.0);
+
+    let th2 = nu_angle(s.x, s.y, lam1, cf).rem_euclid(2.0 * std::f32::consts::PI);
+    let idx = if s.x * s.vy - s.y * s.vx > 0.0 { 0 } else { 1 };
+    (th1, th2, idx)
+}
+
+/// Case C — elliptic caustic on a confocal square (`β` wall): folded libration.
+/// The accessible region splits into an upper and lower part, split by `sign(y)`.
+fn elliptic_confocal_square(
+    params: &mut TorusParams,
+    s: &PhaseSample,
+    lam1: f32,
+    lam2: f32,
+    lc: f32,
+    d2: f32,
+) -> (f32, f32, u32) {
+    let cf = params.confocal;
+    let roots = [cf.a, cf.b, lc];
+    let (d1, _bottom) = lam_dots(s, lam1, lam2, cf);
+    if params.cache.l1.is_none() {
+        params.cache.l1 = Some(Libration::new(params.lam_wall, lc, roots, 512));
+    }
+    if params.cache.l2.is_none() {
+        let beta = params.beta.unwrap();
+        params.cache.l2 = Some(Libration::new(beta, cf.a, roots, 512));
+    }
+    let l1 = params.cache.l1.as_ref().unwrap();
+    let l2 = params.cache.l2.as_ref().unwrap();
+    let th1 = l1.theta(lam1, d1 > 0.0);
+
+    let tau = if s.x >= 0.0 { 1.0 } else { -1.0 };
+    let u2 = l2.w_full - tau * l2.tail(lam2);
+    let frac = std::f32::consts::PI * u2 / (2.0 * l2.w_full);
+    let th2 = if tau * d2 > 0.0 {
+        frac
+    } else {
+        2.0 * std::f32::consts::PI - frac
+    };
+    let idx = if s.y >= 0.0 { 0 } else { 1 };
+    (th1, th2, idx)
+}
+
+/// Cases B / C-hyperbola — hyperbolic caustic: both coordinates fold, and the
+/// accessible region is a single torus.
+fn hyperbolic(
+    params: &mut TorusParams,
+    s: &PhaseSample,
+    lam1: f32,
+    lam2: f32,
+    lc: f32,
+    d1: f32,
+    d2: f32,
+) -> (f32, f32, u32) {
+    let cf = params.confocal;
+    let roots = [cf.a, cf.b, lc];
+    if params.cache.l1.is_none() {
+        params.cache.l1 = Some(Libration::new(params.lam_wall, cf.b, roots, 512));
+    }
+    if params.cache.l2.is_none() {
+        params.cache.l2 = Some(Libration::new(lc, cf.a, roots, 512));
+    }
+    let h1 = params.cache.l1.as_ref().unwrap();
+    let h2 = params.cache.l2.as_ref().unwrap();
+
+    let sig = if s.y >= 0.0 { 1.0 } else { -1.0 };
+    let u1 = h1.w_full + sig * h1.tail(lam1);
+    let f1 = std::f32::consts::PI * u1 / (2.0 * h1.w_full);
+    let th1 = if -sig * d1 > 0.0 {
+        f1
+    } else {
+        2.0 * std::f32::consts::PI - f1
+    };
+
+    let tau = if s.x >= 0.0 { 1.0 } else { -1.0 };
+    let u2 = h2.w_full - tau * h2.tail(lam2);
+    let f2 = std::f32::consts::PI * u2 / (2.0 * h2.w_full);
+    let th2 = if tau * d2 > 0.0 {
+        f2
+    } else {
+        2.0 * std::f32::consts::PI - f2
+    };
+
+    (th1, th2, 0)
 }
 
 // ---------------------------------------------------------------------------

@@ -219,11 +219,18 @@ fn assert_torus_well_filled(
     let mut max_t2 = f32::MIN;
     let mut mapped = Vec::with_capacity(points.len());
     let mut cache = billiards::torus::TorusCache::default();
+    let cf = billiards::torus::ConfocalParams::standard();
     let (lam_wall, beta) = billiards::torus_bounds(domain);
     for q in points {
-        let (th1, th2, _idx) = billiards::torus::to_torus(
-            q[0], q[1], q[2], q[3], A, B, &mut cache, lam_wall, beta, 1e-9,
-        );
+        let sample = billiards::torus::PhaseSample::new(q[0], q[1], q[2], q[3]);
+        let mut params = billiards::torus::TorusParams {
+            confocal: &cf,
+            lam_wall,
+            beta,
+            sep_eps: 1e-9,
+            cache: &mut cache,
+        };
+        let (th1, th2, _idx) = billiards::torus::to_torus(&sample, &mut params);
         mapped.push((th1, th2));
         min_t1 = min_t1.min(th1);
         max_t1 = max_t1.max(th1);
@@ -572,7 +579,12 @@ fn test_rendered_tori_are_distinct() {
 
         // Ellipse caustic → exactly two tori (upper / lower region).
         let cloud = sample_filled_torus(domain, ellipse_lambda(domain), 40);
-        let ids = phase3d::torus_ids(&cloud, false);
+        let regime = billiards::TorusRegime::from_value(
+            true,
+            ellipse_lambda(domain),
+            billiards::torus_bounds(domain).1,
+        );
+        let ids = phase3d::torus_ids(&cloud, regime);
         let n0 = ids.iter().filter(|&&i| i == 0).count();
         let n1 = ids.iter().filter(|&&i| i == 1).count();
         assert!(
@@ -584,7 +596,12 @@ fn test_rendered_tori_are_distinct() {
 
         // Hyperbola caustic → exactly one torus.
         let cloud = sample_filled_torus(domain, hyperbola_lambda(domain), 40);
-        let ids = phase3d::torus_ids(&cloud, true);
+        let regime = billiards::TorusRegime::from_value(
+            true,
+            hyperbola_lambda(domain),
+            billiards::torus_bounds(domain).1,
+        );
+        let ids = phase3d::torus_ids(&cloud, regime);
         let n_hyper = ids.iter().filter(|&&i| i == 0).count();
         assert!(
             n_hyper == cloud.len(),

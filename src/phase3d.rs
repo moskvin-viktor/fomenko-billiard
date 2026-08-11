@@ -1,4 +1,3 @@
-use crate::{A, B};
 use macroquad::prelude::*;
 
 /// A 3D phase space point (x, y, θ/π) where θ = atan2(vy, vx)
@@ -152,6 +151,7 @@ pub fn sample_trajectory_phase_dense(
     let mut p = p0;
     let mut v = v0;
     let mut cache = crate::torus::TorusCache::default();
+    let cf = crate::torus::ConfocalParams::standard();
     for _ in 0..max_steps {
         let speed = v.length();
         if speed < 1e-12 {
@@ -166,9 +166,15 @@ pub fn sample_trajectory_phase_dense(
             let f = k as f32 / per_seg as f32;
             let q = p + (hit - p) * f;
             let theta = v.y.atan2(v.x) / std::f32::consts::PI;
-            let (th1, th2, tidx) = crate::torus::to_torus(
-                q.x, q.y, v.x, v.y, A, B, &mut cache, bounds.0, bounds.1, 1e-9,
-            );
+            let sample = crate::torus::PhaseSample::new(q.x, q.y, v.x, v.y);
+            let mut params = crate::torus::TorusParams {
+                confocal: &cf,
+                lam_wall: bounds.0,
+                beta: bounds.1,
+                sep_eps: 1e-9,
+                cache: &mut cache,
+            };
+            let (th1, th2, tidx) = crate::torus::to_torus(&sample, &mut params);
             let tidx = if tidx == u32::MAX { 0 } else { tidx };
             pts.push(PhasePoint {
                 x: q.x,
@@ -290,21 +296,13 @@ pub fn torus_embed(pt: &PhasePoint, r_major: f32, r_minor: f32, torus_index: u32
 
 /// Assign each phase point to a torus ID, one per disconnected region.
 ///
-/// The confocal presets are **confocal quadrilaterals** (Case C of the spec):
-///
-/// * A hyperbola caustic (Λ > B) has a single torus → all points get ID 0.
-/// * An ellipse caustic (Λ < B) splits the table into an upper and a lower
-///   accessible region, each its own torus → IDs {0, 1} by `sign(y)`.
-pub fn torus_ids(points: &[[f32; 4]], is_hyperbola: bool) -> Vec<u32> {
-    if is_hyperbola {
-        // Single connected torus.
-        return vec![0; points.len()];
-    }
-
-    // Case C: two tori distinguished by the sign of y (upper / lower region).
+/// The number of tori and the observable that splits them are given by the
+/// [`TorusRegime`], so this always agrees with the app-side per-torus picker
+/// (`one_per_torus`) and with the `torus_index` baked into sampled points.
+pub fn torus_ids(points: &[[f32; 4]], regime: crate::TorusRegime) -> Vec<u32> {
     points
         .iter()
-        .map(|q| if q[1] >= 0.0 { 0 } else { 1 })
+        .map(|q| regime.index_of(q[0], q[1], q[2], q[3]))
         .collect()
 }
 

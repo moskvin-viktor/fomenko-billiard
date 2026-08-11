@@ -8,6 +8,84 @@ pub mod torus_render;
 pub const A: f32 = 4.0;
 pub const B: f32 = 1.0;
 
+/// How trajectories sit on the torus at the current Λ (caustic type) and
+/// domain shape.  This is the single source of truth for "how many tori" and
+/// "which observable splits them", so the renderer's `torus_index` rule and
+/// the app's per-torus highlight picker agree by construction.
+///
+/// Frames the Jacobi–Moser cases of `docs/thorus_params.md`:
+///
+/// * [`TorusRegime::Single`] — a hyperbola caustic (Λ > B): Case B / C-hyperbola,
+///   one connected torus, no split.
+/// * [`TorusRegime::SplitByY`] — an ellipse caustic (Λ < B) on a confocal
+///   quadrilateral (Case C): upper / lower region, split by `sign(y)`.
+/// * [`TorusRegime::SplitByL`] — an ellipse caustic on a full ellipse (Case A,
+///   e.g. the L-shape fallback with no hyperbola wall): split by the sign of
+///   the angular momentum `x·vy − y·vx`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TorusRegime {
+    Single,
+    SplitByY,
+    SplitByL,
+}
+
+impl TorusRegime {
+    /// Classify given `lam` (Λ for confocal, θ/π for polyline) for a domain.
+    ///
+    /// `beta` is the hyperbola-wall parameter from [`torus_bounds`]; `Some` means
+    /// a confocal quadrilateral (Case C), `None` a full ellipse (Case A/B).
+    pub fn from_value(is_confocal: bool, lam: f32, beta: Option<f32>) -> Self {
+        if !is_confocal || lam >= B {
+            // Polyline domains and hyperbola caustics are always one torus.
+            Self::Single
+        } else if beta.is_some() {
+            // Case C: ellipse caustic on a confocal quadrilateral split by sign(y).
+            Self::SplitByY
+        } else {
+            // Case A: ellipse caustic on a full ellipse split by sign(L).
+            Self::SplitByL
+        }
+    }
+
+    /// Number of disconnected tori for this regime.
+    pub fn n_tori(self) -> u32 {
+        match self {
+            Self::Single => 1,
+            Self::SplitByY | Self::SplitByL => 2,
+        }
+    }
+
+    /// Classifier of the caustic: `"ellipse"` (Λ < B) or `"hyperbola"` (Λ > B).
+    pub fn caustic_label(self) -> &'static str {
+        match self {
+            Self::SplitByY | Self::SplitByL => "ellipse",
+            Self::Single => "hyperbola",
+        }
+    }
+
+    /// Torus index for a phase-space point `(x, y, vx, vy)` under this regime,
+    /// mirroring the observable split used by a given embedding.
+    pub fn index_of(self, x: f32, y: f32, vx: f32, vy: f32) -> u32 {
+        match self {
+            Self::Single => 0,
+            Self::SplitByY => {
+                if y >= 0.0 {
+                    0
+                } else {
+                    1
+                }
+            }
+            Self::SplitByL => {
+                if x * vy - y * vx > 0.0 {
+                    0
+                } else {
+                    1
+                }
+            }
+        }
+    }
+}
+
 use macroquad::prelude::*;
 
 /// Pick start points for a given domain at a given value of the second integral.
