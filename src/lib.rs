@@ -3,6 +3,7 @@ pub mod phase3d;
 pub mod presets;
 pub mod quadratic;
 pub mod render;
+pub mod second_integral;
 pub mod torus;
 pub mod torus_render;
 
@@ -300,24 +301,46 @@ pub fn dense_caustic_starts(
 /// Returns `None` for non-quadrilaterals (e.g. L-shapes with 6 arcs)
 /// since the simple ellipse/hyperbola test is only valid for quadrilaterals.
 fn confocal_bounds(domain: &domain::Domain) -> Option<(f32, f32)> {
-    // Count quadric segments — must be exactly 4 for the simple test to be valid
-    let mut ell = None;
-    let mut hyp = None;
-    let mut quad_count = 0;
+    // Count quadric segments — must be exactly 4 for the simple test to be valid.
+    let quad_count = domain
+        .segments
+        .iter()
+        .filter(|s| matches!(s, domain::Segment::Quad { .. }))
+        .count();
+    if quad_count == 4 {
+        boundary_lambdas(domain)
+    } else {
+        None
+    }
+}
+
+/// The actual boundary lambdas of a domain, by walking its quadric arcs:
+/// `λ_ell` = min `λ < B` (the outer ellipse), `λ_hyp` = max `λ > B` (the inner
+/// hyperbola wall).  Returns `None` if the domain has no such arc pair.
+///
+/// This is the raw (min-ellipse, max-hyperbola) walk.  Unlike
+/// [`torus_bounds`](torus_bounds) it reports the *real* boundary values even for
+/// non-quadrilaterals (L-shapes), which the confocal signed range needs.
+pub fn boundary_lambdas(domain: &domain::Domain) -> Option<(f32, f32)> {
+    let mut ell: Option<f32> = None;
+    let mut hyp: Option<f32> = None;
     for seg in &domain.segments {
         if let domain::Segment::Quad { curve, .. } = seg {
-            quad_count += 1;
-            if curve.lambda < curve.b_param {
-                ell = Some(curve.lambda);
-            } else if curve.lambda < curve.a_param {
-                hyp = Some(curve.lambda);
+            let b = curve.b_param;
+            if curve.lambda < b {
+                ell = match ell {
+                    Some(e) => Some(e.min(curve.lambda)),
+                    None => Some(curve.lambda),
+                };
+            } else if curve.lambda >= b && curve.lambda < curve.a_param {
+                hyp = match hyp {
+                    Some(h) => Some(h.max(curve.lambda)),
+                    None => Some(curve.lambda),
+                };
             }
         }
     }
-    match (ell, hyp) {
-        (Some(e), Some(h)) if quad_count == 4 => Some((e, h)),
-        _ => None,
-    }
+    Some((ell?, hyp?))
 }
 
 /// Torus-mapping bounds `(lam_wall, beta)` for a domain.

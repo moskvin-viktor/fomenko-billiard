@@ -1,183 +1,19 @@
-use billiards::{domain, phase3d, presets, render, TorusRegime, A, B};
+use billiards::second_integral::{LambdaRange, SecondIntegralRange};
+use billiards::{phase3d, presets, render, TorusRegime, A, B};
 use macroquad::prelude::*;
-use std::cmp::Ordering;
 
 // The billiard's 2D drawing (Camera, CachedDomain, draw_*) lives in the
-// `render` module.  This file is the app: input → state → draw loop.
+// `render` module, and the second-integral range math lives in the lib
+// (`second_integral`).  This file is the app: input → state → draw loop.
 
-// ----------------------------------------------------------------
-// Second-integral slider range
-// ----------------------------------------------------------------
-
-/// Describes the valid range for the second-integral slider.
-enum SecondIntegralRange {
-    /// Confocal caustic parameter Λ.
-    Confocal {
-        ell_min: f32,
-        ell_max: f32,
-        hyp_min: f32,
-        #[allow(dead_code)] // only used to size the range, not by the slider
-        hyp_max: f32,
-        total_range: f32,
-    },
-    /// Polyline angle θ/π ∈ [-1, 1].
-    Angle,
-}
-
-impl SecondIntegralRange {
-    fn for_domain(domain: &domain::Domain, is_confocal: bool) -> Self {
-        if !is_confocal {
-            return Self::Angle;
-        }
-        let (ell_min, ell_max, hyp_min, hyp_max) = LambdaRange::of_domain(domain).slider_bounds();
-        let ell_range = (ell_max - ell_min).max(0.0);
-        let hyp_range = (hyp_max - hyp_min).max(0.0);
-        let total_range = ell_range + hyp_range;
-        Self::Confocal {
-            ell_min,
-            ell_max,
-            hyp_min,
-            hyp_max,
-            total_range,
-        }
-    }
-
-    /// Map slider fraction t ∈ [0, 1] to the second integral value.
-    /// Slider value for a fraction `t ∈ [0, 1]` of the track.
-    fn value_at_fraction(&self, t: f32) -> f32 {
-        match self {
-            Self::Angle => -1.0 + 2.0 * t.clamp(0.0, 1.0),
-            Self::Confocal {
-                ell_min,
-                ell_max,
-                hyp_min,
-                total_range,
-                ..
-            } => {
-                if *total_range <= 0.0 {
-                    return 0.0;
-                }
-                let ell_range = ell_max - ell_min;
-                let t = t.clamp(0.0, 1.0);
-                let pos = t * total_range;
-                if pos <= ell_range {
-                    ell_min + pos
-                } else {
-                    hyp_min + (pos - ell_range)
-                }
-            }
-        }
-    }
-
-    /// Map a second integral value to slider fraction t ∈ [0, 1].
-    /// Track fraction `∈ [0, 1]` for a slider value.
-    fn fraction_of_value(&self, lam: f32) -> f32 {
-        match self {
-            Self::Angle => (lam.clamp(-1.0, 1.0) + 1.0) / 2.0,
-            Self::Confocal {
-                ell_min,
-                ell_max,
-                hyp_min,
-                total_range,
-                ..
-            } => {
-                if *total_range <= 0.0 {
-                    return 0.0;
-                }
-                let ell_range = ell_max - ell_min;
-                if lam <= *ell_max {
-                    (lam - ell_min) / total_range
-                } else if lam >= *hyp_min {
-                    (ell_range + (lam - hyp_min)) / total_range
-                } else {
-                    ell_range / total_range
-                }
-            }
-        }
-    }
-}
-
-/// Inward margin used to stay clear of the degenerate boundaries at the ends
-/// of the second-integral range (Λ = B separatrix, Λ close to A, and the
-/// hyperbola walls).  Used by clamping and animation.
-const SECOND_INT_EPS: f32 = 0.05;
-
-/// Tighter margin used only by the slider, so the thumb can get closer to the
-/// separatrix than the clamp/anim will allow.
-const SLIDER_EPS: f32 = 0.02;
-
-/// Λ change per arrow-key press.
+// Λ change per arrow-key press.
 const KEY_STEP: f32 = 0.05;
 
-/// Λ swept per second during animation.
+// Λ swept per second during animation.
 const ANIM_SPEED: f32 = 0.4;
 
-/// Slider value change below which we ignore (avoid rebuilds on fp noise).
+// Slider value change below which we ignore (avoid rebuilds on fp noise).
 const SLIDER_JITTER: f32 = 0.0001;
-
-/// The valid Λ range for a confocal domain.
-///
-/// Encapsulates the boundary-lambda extraction (λ_ell, λ_hyp) so the places
-/// that reason about "where the slider / clamping / animation may go" share one
-/// extraction instead of re-deriving it.  The inward margin `ε` is a *parameter*:
-/// the slider and the clamp/anim legitimately use different values.
-struct LambdaRange {
-    /// λ_ell — the outer ellipse boundary (min `λ < B`).
-    lambda_ell: f32,
-    /// λ_hyp — the inner hyperbola boundary (max `λ > B`).
-    lambda_hyp: f32,
-}
-
-impl LambdaRange {
-    /// Extract (λ_ell, λ_hyp) from the domain's quadric boundary arcs.
-    fn of_domain(domain: &domain::Domain) -> Self {
-        let mut ell = f32::MAX;
-        let mut hyp = f32::MIN;
-        for seg in &domain.segments {
-            if let domain::Segment::Quad { curve, .. } = seg {
-                if curve.lambda < B {
-                    ell = ell.min(curve.lambda);
-                }
-                if curve.lambda > B {
-                    hyp = hyp.max(curve.lambda);
-                }
-            }
-        }
-        // Fall back to the raw confocal range if a boundary was missing.
-        Self {
-            lambda_ell: if ell == f32::MAX { 0.0 } else { ell },
-            lambda_hyp: if hyp == f32::MIN { B + 1.0 } else { hyp },
-        }
-    }
-
-    /// Values usable for the slider, with the slider's tight margin.
-    fn slider_bounds(&self) -> (f32, f32, f32, f32) {
-        let e = SLIDER_EPS;
-        (
-            self.lambda_ell + e, // ell_min
-            B - e,               // ell_max
-            self.lambda_hyp + e, // hyp_min
-            A - e,               // hyp_max
-        )
-    }
-
-    /// Clamp `lam` to the valid range, jumping over the forbidden gap between
-    /// the ellipse and hyperbola sides (the separatrix near `Λ = B`).
-    fn clamp(&self, lam: f32, prev: f32) -> f32 {
-        let (ell_min, ell_max) = (self.lambda_ell + SECOND_INT_EPS, B - SECOND_INT_EPS);
-        let (hyp_min, hyp_max) = (self.lambda_hyp + SECOND_INT_EPS, A - SECOND_INT_EPS);
-
-        let clamped = lam.clamp(ell_min, hyp_max);
-        if clamped > ell_max && clamped < hyp_min {
-            match lam.partial_cmp(&prev).unwrap_or(Ordering::Equal) {
-                Ordering::Greater => hyp_min,
-                _ => ell_max,
-            }
-        } else {
-            clamped
-        }
-    }
-}
 
 // ----------------------------------------------------------------
 // Slider widget
@@ -480,12 +316,8 @@ async fn main() {
             let step = speed * dt;
 
             if configs[idx].is_confocal {
-                let le = SECOND_INT_EPS;
                 let range = LambdaRange::of_domain(&configs[idx].domain);
-                let ell_min = range.lambda_ell + le;
-                let ell_max = B - le;
-                let hyp_min = range.lambda_hyp + le;
-                let hyp_max = A - le;
+                let (ell_min, ell_max, hyp_min, hyp_max) = range.animation_bounds();
 
                 let mut next = second_int + anim_dir * step;
                 // Bounce off the ends of the valid range.

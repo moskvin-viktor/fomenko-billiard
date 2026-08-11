@@ -10,6 +10,7 @@ src/
 ├── quadratic.rs       — ConfocalQuadric type, intersection, reflection, geometry
 ├── presets.rs         — Predefined domain configurations
 ├── render.rs          — 2D billiard drawing: Camera, CachedDomain, draw_* primitives
+├── second_integral.rs — Valid second-integral range + normalized slider mapping
 ├── phase3d.rs         — 3D phase-space sampling, torus embedding, drawing
 ├── torus_render.rs    — Cached offscreen rendering of the 3D torus
 └── torus/
