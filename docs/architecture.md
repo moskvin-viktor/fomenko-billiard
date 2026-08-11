@@ -4,25 +4,35 @@
 
 ```
 src/
-├── main.rs        — App entry, rendering, camera, input handling
-├── domain.rs      — Domain & Segment types, ray intersection, reflection
-├── quadratic.rs   — ConfocalQuadric type, intersection, reflection, geometry
-├── torus.rs       — Liouville-torus mapping (Jacobi normalization)
-├── presets.rs     — Predefined domain configurations
-├── phase3d.rs     — 3D phase-space sampling, torus embedding, drawing
+├── main.rs            — App entry, rendering, camera, input handling
+├── lib.rs             — ConfocalParams/TorusRegime, start-point selection, torus_bounds
+├── domain.rs          — Domain & Segment types, ray intersection, reflection
+├── quadratic.rs       — ConfocalQuadric type, intersection, reflection, geometry
+├── presets.rs         — Predefined domain configurations
+├── phase3d.rs         — 3D phase-space sampling, torus embedding, drawing
+├── torus_render.rs    — Cached offscreen rendering of the 3D torus
+└── torus/
+    ├── mod.rs         — Module facade + re-exports
+    ├── confocal.rs    — ConfocalParams, PhaseSample, coordinate helpers
+    ├── quadrature.rs  — Libration tables, interpolation (the Abelian phase)
+    └── map.rs         — to_torus: phase-space → torus mapping (Cases A/B/C)
 tests/
-├── caustic_tests.rs — Integration tests for caustic start-point validity
-└── torus_tests.rs   — Torus-manifold tests
+├── caustic_tests.rs        — Integration tests for caustic start-point validity
+├── torus_tests.rs          — Torus-manifold topology tests
+├── torus_render_test.rs    — Renderer smoke test (non-blank offscreen target)
+└── highlight_invariants.rs — Per-torus highlight consistency invariants
 ```
 
 ## Module Dependencies
 
 ```
 presets.rs  →  domain.rs  →  quadratic.rs
-main.rs     →  domain.rs, quadratic.rs, presets.rs, torus.rs, phase3d.rs
-phase3d.rs  →  torus.rs
-lib.rs      →  torus_bounds (torus mapping bounds for a domain)
-tests       →  domain.rs, quadratic.rs, presets.rs, phase3d.rs, torus.rs
+main.rs     →  domain.rs, quadratic.rs, presets.rs, lib.rs, phase3d.rs
+phase3d.rs  →  torus::{map, confocal}, torus_render
+lib.rs      →  domain.rs, quadratic.rs, torus
+
+Inside torus/:  map.rs → confocal.rs, quadrature.rs
+                mod.rs re-exports the three leaf modules.
 ```
 
 No circular dependencies. `quadratic.rs` is leaf — no project imports of its own.

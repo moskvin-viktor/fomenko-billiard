@@ -276,19 +276,36 @@ fn f_lam(th: f32, pos: Vec2, lam: f32, a: f32, b: f32) -> f32 {
 // 3D drawing helpers
 // ----------------------------------------------------------------
 
-/// Map a phase-space point onto a Liouville torus (using its precomputed
-/// angles) and return both the 3D position and the outward surface normal.
+/// Standard torus surface (see §12 of the spec):
+/// `((R + r cos θ₁) cos θ₂, (R + r cos θ₁) sin θ₂, r sin θ₁)`.
 ///
-/// The two angle coordinates are the **phases on the two real ovals** of the
-/// cubic `w² = P(λ) = (a−λ)(b−λ)(λc−λ)` (the Jacobi–Moser picture, see
-/// `docs/thorus_params.md`).  Only these normalize the flow to a straight line
-/// on `[0, 2π)²`; the old linear map of `(μ, ν)` warped the torus.
+/// θ₂ is the azimuth about the z-axis (major / toroidal); θ₁ parametrizes the
+/// tube cross-section (minor / poloidal).
+fn embed_surface(theta1: f32, theta2: f32, r_major: f32, r_minor: f32) -> Vec3 {
+    let (sin1, cos1) = theta1.sin_cos();
+    let (sin2, cos2) = theta2.sin_cos();
+    vec3(
+        (r_major + r_minor * cos1) * cos2,
+        (r_major + r_minor * cos1) * sin2,
+        r_minor * sin1,
+    )
+}
+
+/// Normal of the standard torus surface at `(θ₁, θ₂)` for shading.
+fn surface_normal(theta1: f32, theta2: f32) -> Vec3 {
+    let (sin1, cos1) = theta1.sin_cos();
+    let (sin2, cos2) = theta2.sin_cos();
+    vec3(cos1 * cos2, cos1 * sin2, sin1)
+}
+
+/// Embed a phase-space point onto a Liouville torus (using its precomputed
+/// angles) and return both the 3D position and the outward surface normal.
 ///
 /// `torus_index` was baked into the point at sampling time; each disconnected
 /// region gets its own torus, offset in space so multiple tori are distinct.
 pub fn torus_embed(pt: &PhasePoint, r_major: f32, r_minor: f32, torus_index: u32) -> (Vec3, Vec3) {
-    let pos = crate::torus::torus_embed(pt.theta1, pt.theta2, r_major, r_minor);
-    let normal = crate::torus::torus_normal(pt.theta1, pt.theta2);
+    let pos = embed_surface(pt.theta1, pt.theta2, r_major, r_minor);
+    let normal = surface_normal(pt.theta1, pt.theta2);
     // Offset each torus in space so multiple lobes are visually distinct.
     let offset = torus_index as f32 * 3.0 * r_major;
     (pos + vec3(offset, 0.0, 0.0), normal)
