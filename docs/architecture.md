@@ -9,6 +9,7 @@ src/
 ├── domain.rs          — Domain & Segment types, ray intersection, reflection
 ├── quadratic.rs       — ConfocalQuadric type, intersection, reflection, geometry
 ├── presets.rs         — Predefined domain configurations
+├── render.rs          — 2D billiard drawing: Camera, CachedDomain, draw_* primitives
 ├── phase3d.rs         — 3D phase-space sampling, torus embedding, drawing
 ├── torus_render.rs    — Cached offscreen rendering of the 3D torus
 └── torus/
@@ -27,8 +28,9 @@ tests/
 
 ```
 presets.rs  →  domain.rs  →  quadratic.rs
-main.rs     →  domain.rs, quadratic.rs, presets.rs, lib.rs, phase3d.rs
+main.rs     →  domain.rs, quadratic.rs, presets.rs, lib.rs, phase3d.rs, render.rs
 phase3d.rs  →  torus::{map, confocal}, torus_render
+render.rs   →  domain.rs, quadratic.rs, lib.rs (TorusRegime)
 lib.rs      →  domain.rs, quadratic.rs, torus
 
 Inside torus/:  map.rs → confocal.rs, quadrature.rs

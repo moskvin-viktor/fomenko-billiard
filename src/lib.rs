@@ -2,6 +2,7 @@ pub mod domain;
 pub mod phase3d;
 pub mod presets;
 pub mod quadratic;
+pub mod render;
 pub mod torus;
 pub mod torus_render;
 

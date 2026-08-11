@@ -1,5 +1,6 @@
 use crate::domain;
 use crate::domain::Domain;
+use crate::{A, B};
 use macroquad::prelude::*;
 
 pub struct Preset {
@@ -16,13 +17,13 @@ pub struct Preset {
 
 /// Confocal family: (b − λ)x² + (a − λ)y² = (a − λ)(b − λ),  λ ≤ a.
 ///
+/// `A`/`B` are imported from the crate root — the single source of truth for
+/// the confocal family every preset is built in.
+///
 ///   λ <  b   →  ellipse
 ///   λ =  b   →  degenerate (segment between foci + horizontal rays)
 ///   b < λ < a →  hyperbola (opens left/right)
 ///   λ =  a   →  vertical segment
-const A: f32 = 4.0;
-const B: f32 = 1.0;
-
 pub fn all_presets() -> Vec<Preset> {
     vec![
         Preset {
