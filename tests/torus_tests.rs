@@ -278,7 +278,7 @@ fn assert_torus_well_filled(
 /// 2D region.
 fn sample_torus_cloud(domain: &domain::Domain, lam: f32, per_component: usize) -> Vec<[f32; 4]> {
     let mut all = Vec::new();
-    let starts = billiards::dense_caustic_starts(A, B, lam, domain, per_component);
+    let starts = billiards::dense_caustic_starts(domain, lam, per_component);
     for &(p, v) in &starts {
         let traj = phase3d::sample_trajectory_phase_full(domain, p, v, 1200, 1);
         all.extend(traj);
@@ -290,7 +290,7 @@ fn sample_torus_cloud(domain: &domain::Domain, lam: f32, per_component: usize) -
 /// points along each segment of many caustic trajectories.
 fn sample_filled_torus(domain: &domain::Domain, lam: f32, per_component: usize) -> Vec<[f32; 4]> {
     let mut all = Vec::new();
-    let starts = billiards::dense_caustic_starts(A, B, lam, domain, per_component);
+    let starts = billiards::dense_caustic_starts(domain, lam, per_component);
     for &(p, v) in &starts {
         let traj = phase3d::sample_trajectory_phase_full(domain, p, v, 400, 12);
         all.extend(traj);
@@ -576,14 +576,12 @@ fn test_rendered_tori_are_distinct() {
             continue;
         }
         let domain = &preset.domain;
+        let structure =
+            billiards::confocal::ConfocalStructure::of_domain(domain).expect("confocal structure");
 
         // Ellipse caustic → exactly two tori (upper / lower region).
         let cloud = sample_filled_torus(domain, ellipse_lambda(domain), 40);
-        let regime = billiards::TorusRegime::from_value(
-            true,
-            ellipse_lambda(domain),
-            billiards::torus_bounds(domain).1,
-        );
+        let regime = structure.regime(ellipse_lambda(domain));
         let ids = phase3d::torus_ids(&cloud, regime);
         let n0 = ids.iter().filter(|&&i| i == 0).count();
         let n1 = ids.iter().filter(|&&i| i == 1).count();
@@ -596,11 +594,7 @@ fn test_rendered_tori_are_distinct() {
 
         // Hyperbola caustic → exactly one torus.
         let cloud = sample_filled_torus(domain, hyperbola_lambda(domain), 40);
-        let regime = billiards::TorusRegime::from_value(
-            true,
-            hyperbola_lambda(domain),
-            billiards::torus_bounds(domain).1,
-        );
+        let regime = structure.regime(hyperbola_lambda(domain));
         let ids = phase3d::torus_ids(&cloud, regime);
         let n_hyper = ids.iter().filter(|&&i| i == 0).count();
         assert!(

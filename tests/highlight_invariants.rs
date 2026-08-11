@@ -253,7 +253,7 @@ fn highlights_are_on_same_tori_as_dense_fill() {
         let bounds = billiards::torus_bounds(domain);
 
         for lam in [ellipse_lambda(domain), hyperbola_lambda(domain)] {
-            let dense = billiards::dense_caustic_starts(A, B, lam, domain, 24);
+            let dense = billiards::dense_caustic_starts(domain, lam, 24);
             assert!(
                 !dense.is_empty(),
                 "{} Λ={}: no dense starts",

@@ -316,7 +316,7 @@ pub fn torus_embed(pt: &PhasePoint, r_major: f32, r_minor: f32, torus_index: u32
 /// The number of tori and the observable that splits them are given by the
 /// [`TorusRegime`], so this always agrees with the app-side per-torus picker
 /// (`one_per_torus`) and with the `torus_index` baked into sampled points.
-pub fn torus_ids(points: &[[f32; 4]], regime: crate::TorusRegime) -> Vec<u32> {
+pub fn torus_ids(points: &[[f32; 4]], regime: crate::confocal::TorusRegime) -> Vec<u32> {
     points
         .iter()
         .map(|q| regime.index_of(q[0], q[1], q[2], q[3]))

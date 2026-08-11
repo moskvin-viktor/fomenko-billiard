@@ -1,5 +1,5 @@
 use billiards::second_integral::{LambdaRange, SecondIntegralRange};
-use billiards::{phase3d, presets, render, TorusRegime, A, B};
+use billiards::{phase3d, presets, render, A, B};
 use macroquad::prelude::*;
 
 // The billiard's 2D drawing (Camera, CachedDomain, draw_*) lives in the
@@ -189,9 +189,11 @@ impl ViewState {
             // Dense fill of the 3D Liouville torus.  Densely sample the caustic
             // so the union of trajectories sweeps out the full torus surface; a
             // polyline domain has only its single start point.
-            let bounds = billiards::torus_bounds(domain);
+            let bounds = billiards::confocal::ConfocalStructure::of_domain(domain)
+                .map(|s| s.torus_bounds())
+                .unwrap_or((0.0, None));
             let dense_starts = if preset.is_confocal {
-                billiards::dense_caustic_starts(A, B, second_int, domain, 24)
+                billiards::dense_caustic_starts(domain, second_int, 24)
             } else {
                 billiards::get_start_points(A, B, second_int, domain, false, preset.start_center)
             };
@@ -404,11 +406,9 @@ async fn main() {
             }
             // Highlight one short (few-bounce) red trajectory per torus so one
             // can see exactly where each torus's orbit lives on the billiard.
-            let regime = TorusRegime::from_value(
-                preset.is_confocal,
-                second_int,
-                billiards::torus_bounds(&preset.domain).1,
-            );
+            let regime = billiards::confocal::ConfocalStructure::of_domain(&preset.domain)
+                .map(|s| s.regime(second_int))
+                .unwrap_or(billiards::confocal::TorusRegime::Single);
             let picks = render::one_per_torus(&view.start_points, regime);
             for &i in &picks {
                 render::draw_trajectory_red(&view.trajectories[i], 4, cam, w, h);

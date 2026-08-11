@@ -64,8 +64,8 @@ impl SecondIntegralRange {
     /// Boundary lambdas come from the lib's shared segment-walk; the margins
     /// (`SLIDER_EPS`) leave room for the slider thumb near the separatrix.
     fn confocal_bounds(domain: &domain::Domain) -> (f32, f32, f32, f32) {
-        let (lambda_ell, lambda_hyp) = match crate::boundary_lambdas(domain) {
-            Some(x) => x,
+        let (lambda_ell, lambda_hyp) = match crate::confocal::ConfocalStructure::of_domain(domain) {
+            Some(s) => (s.lambda_ell, s.lambda_hyp.unwrap_or(B + 1.0)),
             // No quadric arcs (polyline): no confocal constraint → full range.
             None => (0.0, B + 1.0),
         };
@@ -147,10 +147,10 @@ impl LambdaRange {
     /// Extract `(λ_ell, λ_hyp)` from the domain, or the full-range fallbacks
     /// (`0`, `B + 1`) when the domain has no confocal arcs.
     pub fn of_domain(domain: &domain::Domain) -> Self {
-        match crate::boundary_lambdas(domain) {
-            Some((lambda_ell, lambda_hyp)) => Self {
-                lambda_ell,
-                lambda_hyp,
+        match crate::confocal::ConfocalStructure::of_domain(domain) {
+            Some(s) => Self {
+                lambda_ell: s.lambda_ell,
+                lambda_hyp: s.lambda_hyp.unwrap_or(B + 1.0),
             },
             None => Self {
                 lambda_ell: 0.0,

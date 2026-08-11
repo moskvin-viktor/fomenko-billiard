@@ -5,7 +5,8 @@
 ```
 src/
 ├── main.rs            — App entry, rendering, camera, input handling
-├── lib.rs             — ConfocalParams/TorusRegime, start-point selection, torus_bounds
+├── lib.rs             — Constants, ConfocalStructure/TorusRegime re-exports, start-point selection
+├── confocal.rs        — ConfocalStructure: domain→λ analysis, TorusRegime, caustic run-walk
 ├── domain.rs          — Domain & Segment types, ray intersection, reflection
 ├── quadratic.rs       — ConfocalQuadric type, intersection, reflection, geometry
 ├── presets.rs         — Predefined domain configurations

@@ -5,7 +5,8 @@
 //! and the rendering stays independently readable (and testable against a
 //! headless target if needed).
 
-use crate::{domain, quadratic, TorusRegime};
+use crate::confocal::TorusRegime;
+use crate::{domain, quadratic};
 use macroquad::prelude::*;
 
 // ----------------------------------------------------------------

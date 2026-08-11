@@ -8,7 +8,7 @@
 //! screen via `get_screen_data`), which is deterministic under the test
 //! harness regardless of when the frame is presented.
 
-use billiards::{phase3d, presets, torus_render::TorusRender, A, B};
+use billiards::{phase3d, presets, torus_render::TorusRender};
 use macroquad::prelude::*;
 
 /// Count non-background (non-transparent) pixels in an image.
@@ -42,7 +42,7 @@ async fn torus_render_draws_something() {
     let domain = &preset.domain;
     let lam = 0.5; // elliptic caustic, well inside (0, B)
     let bounds = billiards::torus_bounds(domain);
-    let starts = billiards::dense_caustic_starts(A, B, lam, domain, 24);
+    let starts = billiards::dense_caustic_starts(domain, lam, 24);
     assert!(!starts.is_empty(), "should have caustic start points");
 
     let trajectories: Vec<Vec<phase3d::PhasePoint>> = starts
