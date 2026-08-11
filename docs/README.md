@@ -39,3 +39,6 @@ Tests:
 ```sh
 cargo test
 ```
+
+See [`architecture.md`](architecture.md) for the module layout and
+[`known_issues.md`](known_issues.md) for open bugs and follow-up work.
