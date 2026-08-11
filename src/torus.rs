@@ -252,44 +252,42 @@ impl Libration {
     }
 }
 
+/// Index of the root closest to `target` (ties → earliest).
 fn argmin_abs(roots: [f32; 3], target: f32) -> usize {
-    let mut best = 0;
-    let mut best_d = f32::MAX;
-    for (j, r) in roots.iter().enumerate() {
-        let d = (r - target).abs();
-        if d < best_d {
-            best_d = d;
-            best = j;
-        }
-    }
-    best
+    roots
+        .iter()
+        .enumerate()
+        .min_by(|&(_, ra), &(_, rb)| (ra - target).abs().total_cmp(&(rb - target).abs()))
+        .map(|(j, _)| j)
+        .unwrap_or(0)
 }
 
 /// Linear interpolation with clamping to the grid range.
+/// Linear interpolation of `(xs, ys)` at `x`, clamped to the grid range.
+///
+/// `xs` is strictly increasing, so `binary_search_by` finds either the exact
+/// knot (`Ok(i)`) or the insertion point (`Err(i)` → `x` lies in `(xs[i-1],
+/// xs[i])`).  Boundary clamping falls out of the same search.
 fn interp(x: f32, xs: &[f32], ys: &[f32]) -> f32 {
-    let n = xs.len();
-    if n == 0 {
+    if xs.is_empty() {
         return 0.0;
     }
-    if x <= xs[0] {
+
+    // `i` is the index of the right endpoint of the interval containing `x`.
+    let i = match xs.binary_search_by(|&v| v.total_cmp(&x)) {
+        Ok(i) => i,
+        Err(i) if i == xs.len() => xs.len() - 1, // x >= xs[n-1]
+        Err(i) => i, // x <= xs[0] iff i == 0; else x in (xs[i-1], xs[i])
+    };
+    if i == 0 {
         return ys[0];
     }
-    if x >= xs[n - 1] {
-        return ys[n - 1];
-    }
-    // Binary search for the interval.
-    let mut lo = 0usize;
-    let mut hi = n - 1;
-    while hi - lo > 1 {
-        let mid = (lo + hi) / 2;
-        if xs[mid] <= x {
-            lo = mid;
-        } else {
-            hi = mid;
-        }
-    }
-    let t = (x - xs[lo]) / (xs[hi] - xs[lo]).max(1e-30);
-    ys[lo] + t * (ys[hi] - ys[lo])
+
+    // Linear segment from xs[i-1] to xs[i], clamped so the upper edge returns
+    // ys[n-1] exactly (unchanged from the original clamping behaviour).
+    let (xa, xb) = (xs[i - 1], xs[i]);
+    let t = ((x - xa) / (xb - xa).max(1e-30)).clamp(0.0, 1.0);
+    ys[i - 1] + t * (ys[i] - ys[i - 1])
 }
 
 // ---------------------------------------------------------------------------
