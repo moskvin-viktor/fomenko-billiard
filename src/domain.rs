@@ -1,4 +1,5 @@
 use crate::quadratic::ConfocalQuadric;
+use crate::torus::ConfocalParams;
 use macroquad::prelude::*;
 
 /// A single smooth piece of the boundary.
@@ -262,9 +263,9 @@ impl Domain {
 // ---------------------------------------------------------------------------
 
 /// Build a confocal quadrilateral domain from an ellipse (λ₁) and
-/// a hyperbola (λ₂) of the same confocal family (a, b).
-pub fn confocal_quad(a: f32, b: f32, lambda_ell: f32, lambda_hyp: f32) -> Domain {
-    let arcs = crate::quadratic::quadrilateral_arcs(a, b, lambda_ell, lambda_hyp);
+/// a hyperbola (λ₂) of the same confocal family `cf`.
+pub fn confocal_quad(cf: ConfocalParams, lambda_ell: f32, lambda_hyp: f32) -> Domain {
+    let arcs = crate::quadratic::quadrilateral_arcs(cf, lambda_ell, lambda_hyp);
     Domain::new(
         arcs.iter()
             .map(|(from, to, curve)| Segment::Quad {
@@ -290,15 +291,15 @@ pub fn confocal_quad(a: f32, b: f32, lambda_ell: f32, lambda_hyp: f32) -> Domain
 /// (an ellipse smaller than the outer one) and the two left-side hyperbolas,
 /// creating a 270° re-entrant corner at the junction of arcs 3 and 4.
 pub fn confocal_lshape(
-    a: f32,
-    b: f32,
+    cf: ConfocalParams,
     lambda_ell_outer: f32,
     lambda_hyp_right: f32,
     lambda_hyp_left_upper: f32,
     lambda_hyp_left_lower: f32,
     lambda_ell_step: f32,
 ) -> Domain {
-    // left-upper & left-lower may be equal (single left hyperbola)
+    let a = cf.a;
+    let b = cf.b;
     let hyp_left_upper = lambda_hyp_left_upper.max(lambda_hyp_left_lower);
     let hyp_left_lower = if lambda_hyp_left_upper == lambda_hyp_left_lower {
         lambda_hyp_left_upper

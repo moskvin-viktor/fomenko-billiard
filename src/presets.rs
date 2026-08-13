@@ -1,6 +1,6 @@
 use crate::domain;
 use crate::domain::Domain;
-use crate::{A, B};
+use crate::torus::ConfocalParams;
 use macroquad::prelude::*;
 
 pub struct Preset {
@@ -17,39 +17,40 @@ pub struct Preset {
 
 /// Confocal family: (b − λ)x² + (a − λ)y² = (a − λ)(b − λ),  λ ≤ a.
 ///
-/// `A`/`B` are imported from the crate root — the single source of truth for
-/// the confocal family every preset is built in.
+/// `ConfocalParams::standard()` is the single source of truth for the confocal
+/// family every preset is built in.
 ///
 ///   λ <  b   →  ellipse
 ///   λ =  b   →  degenerate (segment between foci + horizontal rays)
 ///   b < λ < a →  hyperbola (opens left/right)
 ///   λ =  a   →  vertical segment
 pub fn all_presets() -> Vec<Preset> {
+    let cf = ConfocalParams::standard();
     vec![
         Preset {
             label: "Square: ellipse λ=0, hyperbola λ=2.5",
-            domain: domain::confocal_quad(A, B, 0.0, 2.5),
+            domain: domain::confocal_quad(cf, 0.0, 2.5),
             second_integral_label: "Λ",
             is_confocal: true,
             start_center: vec2(0.0, 0.0),
         },
         Preset {
             label: "Thin: ellipse λ=-1, hyperbola λ=2.8",
-            domain: domain::confocal_quad(A, B, -1.0, 2.8),
+            domain: domain::confocal_quad(cf, -1.0, 2.8),
             second_integral_label: "Λ",
             is_confocal: true,
             start_center: vec2(0.0, 0.0),
         },
         Preset {
             label: "Flat: ellipse λ=0.5, hyperbola λ=2.2",
-            domain: domain::confocal_quad(A, B, 0.5, 2.2),
+            domain: domain::confocal_quad(cf, 0.5, 2.2),
             second_integral_label: "Λ",
             is_confocal: true,
             start_center: vec2(0.0, 0.0),
         },
         Preset {
             label: "L-shape (confocal, 3π/2 corner)",
-            domain: domain::confocal_lshape(A, B, 0.0, 2.5, 3.5, 2.8, 0.7),
+            domain: domain::confocal_lshape(cf, 0.0, 2.5, 3.5, 2.8, 0.7),
             second_integral_label: "Λ",
             is_confocal: true,
             start_center: vec2(0.0, 0.0),

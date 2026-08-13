@@ -7,7 +7,7 @@
 //! the binary only calls [`SecondIntegralRange::value_at_fraction`] and
 //! [`SecondIntegralRange::fraction_of_value`].
 
-use crate::{domain, A, B};
+use crate::{domain, torus::ConfocalParams};
 
 /// Inward margin used to stay clear of the degenerate boundaries at the ends
 /// of the second-integral range (Λ = B separatrix, Λ close to A, and the
@@ -64,17 +64,18 @@ impl SecondIntegralRange {
     /// Boundary lambdas come from the lib's shared segment-walk; the margins
     /// (`SLIDER_EPS`) leave room for the slider thumb near the separatrix.
     fn confocal_bounds(domain: &domain::Domain) -> (f32, f32, f32, f32) {
+        let cf = ConfocalParams::standard();
         let (lambda_ell, lambda_hyp) = match crate::confocal::ConfocalStructure::of_domain(domain) {
-            Some(s) => (s.lambda_ell, s.lambda_hyp.unwrap_or(B + 1.0)),
+            Some(s) => (s.lambda_ell, s.lambda_hyp.unwrap_or(cf.b + 1.0)),
             // No quadric arcs (polyline): no confocal constraint → full range.
-            None => (0.0, B + 1.0),
+            None => (0.0, cf.b + 1.0),
         };
         let e = SLIDER_EPS;
         (
             lambda_ell + e, // ell_min
-            B - e,          // ell_max
+            cf.b - e,       // ell_max
             lambda_hyp + e, // hyp_min
-            A - e,          // hyp_max
+            cf.a - e,       // hyp_max
         )
     }
 
@@ -147,14 +148,15 @@ impl LambdaRange {
     /// Extract `(λ_ell, λ_hyp)` from the domain, or the full-range fallbacks
     /// (`0`, `B + 1`) when the domain has no confocal arcs.
     pub fn of_domain(domain: &domain::Domain) -> Self {
+        let cf = ConfocalParams::standard();
         match crate::confocal::ConfocalStructure::of_domain(domain) {
             Some(s) => Self {
                 lambda_ell: s.lambda_ell,
-                lambda_hyp: s.lambda_hyp.unwrap_or(B + 1.0),
+                lambda_hyp: s.lambda_hyp.unwrap_or(cf.b + 1.0),
             },
             None => Self {
                 lambda_ell: 0.0,
-                lambda_hyp: B + 1.0,
+                lambda_hyp: cf.b + 1.0,
             },
         }
     }
@@ -162,20 +164,22 @@ impl LambdaRange {
     /// The four usable Λ bounds `(ell_min, ell_max, hyp_min, hyp_max)` under
     /// the animation margin.  Used to bounce the animation off each side.
     pub fn animation_bounds(&self) -> (f32, f32, f32, f32) {
+        let cf = ConfocalParams::standard();
         let e = SECOND_INT_EPS;
         (
             self.lambda_ell + e, // ell_min
-            B - e,               // ell_max
+            cf.b - e,            // ell_max
             self.lambda_hyp + e, // hyp_min
-            A - e,               // hyp_max
+            cf.a - e,            // hyp_max
         )
     }
 
     /// Clamp `lam` to the valid range, jumping over the forbidden gap between
     /// the ellipse and hyperbola sides (the separatrix near Λ = B).
     pub fn clamp(&self, lam: f32, prev: f32) -> f32 {
-        let (ell_min, ell_max) = (self.lambda_ell + SECOND_INT_EPS, B - SECOND_INT_EPS);
-        let (hyp_min, hyp_max) = (self.lambda_hyp + SECOND_INT_EPS, A - SECOND_INT_EPS);
+        let cf = ConfocalParams::standard();
+        let (ell_min, ell_max) = (self.lambda_ell + SECOND_INT_EPS, cf.b - SECOND_INT_EPS);
+        let (hyp_min, hyp_max) = (self.lambda_hyp + SECOND_INT_EPS, cf.a - SECOND_INT_EPS);
 
         let clamped = lam.clamp(ell_min, hyp_max);
         if clamped > ell_max && clamped < hyp_min {

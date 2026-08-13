@@ -6,12 +6,14 @@
 //! and the inside-test — so the many functions that previously re-extracted
 //! this per-domain information from a [`Domain`] now share a single source.
 
-use crate::{domain, quadratic, A, B};
+use crate::{domain, quadratic, torus::ConfocalParams};
 use macroquad::prelude::*;
 
 /// The confocal geometry of a domain, derived once from its quadric arcs.
 #[derive(Clone, Copy, Debug)]
 pub struct ConfocalStructure {
+    /// The confocal family `(a, b)` the domain's quadrics live in.
+    pub cf: ConfocalParams,
     /// λ_ell — the outer ellipse boundary (min `λ < b`).
     pub lambda_ell: f32,
     /// λ_hyp — the inner hyperbola boundary (max `b < λ < a`).
@@ -25,11 +27,11 @@ impl ConfocalStructure {
     /// Derive the structure from a domain's quadric boundary arcs.
     /// Returns `None` for domains with no confocal arcs (polyline).
     pub fn of_domain(dom: &domain::Domain) -> Option<Self> {
-        let quadrics: Vec<f32> = dom
+        let quadrics: Vec<&quadratic::ConfocalQuadric> = dom
             .segments
             .iter()
             .filter_map(|s| match s {
-                domain::Segment::Quad { curve, .. } => Some(curve.lambda),
+                domain::Segment::Quad { curve, .. } => Some(curve),
                 _ => None,
             })
             .collect();
@@ -37,17 +39,21 @@ impl ConfocalStructure {
             return None;
         }
 
+        let cf = ConfocalParams::new(quadrics[0].a_param, quadrics[0].b_param);
+        let b = cf.b;
         let mut ell: Option<f32> = None;
         let mut hyp: Option<f32> = None;
-        for &lam in &quadrics {
-            if lam < B {
+        for &curve in &quadrics {
+            let lam = curve.lambda;
+            if lam < b {
                 ell = Some(ell.map_or(lam, |e| e.min(lam)));
-            } else if lam > B {
+            } else if lam > b {
                 hyp = Some(hyp.map_or(lam, |h| h.max(lam)));
             }
         }
 
         Some(Self {
+            cf,
             lambda_ell: ell.unwrap_or(0.0),
             lambda_hyp: hyp,
             is_quadrilateral: quadrics.len() == 4 && ell.is_some() && hyp.is_some(),
@@ -69,7 +75,7 @@ impl ConfocalStructure {
     /// The torus regime for a caustic value `lam` (Λ for confocal).  Replaces the
     /// old `TorusRegime::from_value(domain, lam, beta)`.
     pub fn regime(&self, lam: f32) -> TorusRegime {
-        if lam >= B {
+        if lam >= self.cf.b {
             // Hyperbolic caustic: single torus.
             TorusRegime::Single
         } else if self.is_quadrilateral {
@@ -85,10 +91,12 @@ impl ConfocalStructure {
     /// lies within the boundary ellipse and between the two hyperbola sheets.
     /// `slack` shrinks the region slightly inward.  Only valid for exact
     /// quadrilaterals; for non-quadrilaterals use [`domain::Domain::contains`].
-    pub fn contains(&self, a: f32, b: f32, p: Vec2, slack: f32) -> bool {
+    pub fn contains(&self, p: Vec2, slack: f32) -> bool {
         let Some(lambda_hyp) = self.lambda_hyp else {
             return false;
         };
+        let a = self.cf.a;
+        let b = self.cf.b;
         let lambda_ell = self.lambda_ell;
         // Ellipse: Q_λ_ell(p) < 0 means inside.
         let e_val = (b - lambda_ell) * p.x * p.x + (a - lambda_ell) * p.y * p.y
@@ -189,7 +197,7 @@ pub fn caustic_starts(
     sampling: CausticSampling,
     per_component: usize,
 ) -> Vec<(Vec2, Vec2)> {
-    let quad = quadratic::confocal(A, B, lam);
+    let quad = quadratic::confocal(structure.cf, lam);
     let n_samples = sampling.n_samples();
     let pts = quad.sample_boundary(n_samples);
 
@@ -203,7 +211,7 @@ pub fn caustic_starts(
     let mut inside: Vec<bool> = Vec::with_capacity(n_samples);
     for &p in &pts {
         let in_domain = if structure.is_quadrilateral {
-            structure.contains(A, B, p, detect_slack)
+            structure.contains(p, detect_slack)
         } else {
             dom.contains(p)
         };
@@ -299,14 +307,18 @@ fn snap_velocity(
     // The snapped point must be genuinely inside (no slack): the projection can
     // push a sample onto the boundary.
     let genuinely_inside = if structure.is_quadrilateral {
-        structure.contains(A, B, q, 0.0)
+        structure.contains(q, 0.0)
     } else {
         dom.contains(q)
     };
     if !genuinely_inside {
         return None;
     }
-    let vel =
-        quadratic::ConfocalQuadric::velocity_from_caustic(A, B, q, quad.lambda, vec2(0.0, 1.0));
+    let vel = quadratic::ConfocalQuadric::velocity_from_caustic(
+        structure.cf,
+        q,
+        quad.lambda,
+        vec2(0.0, 1.0),
+    );
     Some((q, vel))
 }

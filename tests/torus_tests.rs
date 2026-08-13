@@ -1,4 +1,4 @@
-use billiards::{domain, phase3d, presets, A, B};
+use billiards::{domain, phase3d, presets, torus::ConfocalParams};
 use macroquad::prelude::*;
 
 /// Map a phase point to the two elliptic coordinates (μ, ν).
@@ -13,8 +13,9 @@ use macroquad::prelude::*;
 fn to_elliptic(q: &[f32; 4]) -> (f32, f32) {
     let (x, y, _vx, _vy) = (q[0], q[1], q[2], q[3]);
     // Solve λ² − λ(a+b−x²−y²) − (bx² + ay² − ab) = 0 for the two roots.
-    let a = A;
-    let b = B;
+    let cf = ConfocalParams::standard();
+    let a = cf.a;
+    let b = cf.b;
     let s = x * x + y * y;
     let t = b * x * x + a * y * y - a * b;
     let p = a + b - s;
@@ -64,8 +65,9 @@ fn assert_is_2d_torus(points: &[[f32; 4]], label: &str) {
     }
 
     // Both elliptic coordinates must vary over a substantial range.
-    let mu_frac = mu_span / B; // μ ranges in [−∞, b]
-    let nu_frac = nu_span / (A - B); // ν ranges in [b, a]
+    let cf = ConfocalParams::standard();
+    let mu_frac = mu_span / cf.b; // μ ranges in [−∞, b]
+    let nu_frac = nu_span / (cf.a - cf.b); // ν ranges in [b, a]
     assert!(
         mu_frac > 0.1 && nu_frac > 0.1,
         "{}: elliptic coords do not both vary — μ span {:.3}, ν span {:.3}",
@@ -361,7 +363,7 @@ fn assert_num_tori(points: &[[f32; 4]], is_hyperbola: bool, label: &str) {
 
 /// Verify the two integrals H and Λ are conserved along a trajectory.
 fn assert_integrals_conserved(domain: &domain::Domain, lam: f32, label: &str) {
-    let starts = billiards::start_points_on_caustic(A, B, lam, domain);
+    let starts = billiards::start_points_on_caustic(lam, domain);
     assert!(
         !starts.is_empty(),
         "{}: no start points for Λ={}",
@@ -377,12 +379,14 @@ fn assert_integrals_conserved(domain: &domain::Domain, lam: f32, label: &str) {
         }
 
         let h0 = 0.5 * (v.x * v.x + v.y * v.y);
-        let lam0 = v.x * v.x / A + v.y * v.y / B - (p.x * v.y - p.y * v.x).powi(2) / (A * B);
+        let cf = ConfocalParams::standard();
+        let lam0 =
+            v.x * v.x / cf.a + v.y * v.y / cf.b - (p.x * v.y - p.y * v.x).powi(2) / (cf.a * cf.b);
 
         for (k, q) in traj.iter().enumerate() {
             let (x, y, vx, vy) = (q[0], q[1], q[2], q[3]);
             let h = 0.5 * (vx * vx + vy * vy);
-            let lam = vx * vx / A + vy * vy / B - (x * vy - y * vx).powi(2) / (A * B);
+            let lam = vx * vx / cf.a + vy * vy / cf.b - (x * vy - y * vx).powi(2) / (cf.a * cf.b);
             assert!(
                 (h - h0).abs() < 1e-2,
                 "{}: H not conserved on traj {} sample {}: {:.5} vs {:.5}",
@@ -407,24 +411,26 @@ fn assert_integrals_conserved(domain: &domain::Domain, lam: f32, label: &str) {
 
 /// Pick a valid Λ on the ellipse side for a given domain.
 fn ellipse_lambda(domain: &domain::Domain) -> f32 {
+    let cf = ConfocalParams::standard();
     let mut ell = f32::MAX;
     for seg in &domain.segments {
         if let domain::Segment::Quad { curve, .. } = seg {
-            if curve.lambda < B {
+            if curve.lambda < cf.b {
                 ell = ell.min(curve.lambda);
             }
         }
     }
     // Midpoint of the ellipse range (ell + e, B - e)
-    (ell + 0.05 + B - 0.05) / 2.0
+    (ell + 0.05 + cf.b - 0.05) / 2.0
 }
 
 /// Pick a valid Λ on the hyperbola side for a given domain.
 fn hyperbola_lambda(domain: &domain::Domain) -> f32 {
+    let cf = ConfocalParams::standard();
     let mut hyp = f32::MAX;
     for seg in &domain.segments {
         if let domain::Segment::Quad { curve, .. } = seg {
-            if curve.lambda > B {
+            if curve.lambda > cf.b {
                 hyp = hyp.min(curve.lambda);
             }
         }

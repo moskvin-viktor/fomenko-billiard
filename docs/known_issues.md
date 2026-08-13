@@ -31,17 +31,18 @@ filtered highlights** (the `torus_index` actually present) rather than counting
 pre-filter starts. `ConfocalStructure` (added today) now centralizes the
 `regime`/`contains`/`caustic_starts` logic, giving this fix one home.
 
-## 2. `main.rs` is still a thin-shell-plus-widgets monolith
-Not "math" anymore (that moved to the lib), but `main.rs` still holds `Slider`
-(the drag widget), `ViewState` (app state glue), and the `async fn main` input
-loop — ~200 lines of app glue in one binary file. Lower priority; the domain
-logic is already out.
+## 2. ~~`main.rs` is still a thin-shell-plus-widgets monolith~~ (RESOLVED)
+`main.rs` is now a thin shell: the drag widget moved to `src/ui.rs` (`Slider`),
+the app loop + `ViewState` moved to `src/app.rs` (`App`), and `main` just
+constructs and runs the app.
 
-## 3. `A` / `B` family constants — consumed but not the single clear home
-`lib.rs` owns `pub const A/B`, and `ConfocalParams::standard()`/callers reference
-them. This is now mostly centralized (presets imported them), but there's still
-the conceptual question of whether the confocal family should be a first-class
-parameter everywhere rather than global constants.
+## 3. ~~`A` / `B` family constants — consumed but not the single clear home~~ (RESOLVED)
+`ConfocalParams` is now the single first-class carrier of the confocal family
+throughout the codebase. `ConfocalStructure` stores a `cf`, `quadratic`/`domain`/
+`render` take `ConfocalParams` instead of `(a, b)` scalar pairs, and the dead
+`_a`/`_b` params were dropped from `get_start_points`/`start_points_on_caustic`.
+`ConfocalParams::standard()` is the single definition site (`a = 4.0, b = 1.0`);
+the crate-root `A`/`B` constants are gone.
 
 ## 4. Remaining clippy hygiene (trivial, safe)
 All pre-existing, none from recent refactors:

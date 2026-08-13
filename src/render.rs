@@ -6,6 +6,7 @@
 //! headless target if needed).
 
 use crate::confocal::TorusRegime;
+use crate::torus::ConfocalParams;
 use crate::{domain, quadratic};
 use macroquad::prelude::*;
 
@@ -157,14 +158,15 @@ pub fn draw_start_marker(pos: Vec2, cam: &Camera, w: f32, h: f32) {
 
 /// Draw caustic curves and degenerate reference lines (for confocal domains).
 pub fn draw_caustic(
-    a: f32,
-    b: f32,
+    cf: ConfocalParams,
     lam: f32,
     domain: &domain::Domain,
     cam: &Camera,
     w: f32,
     h: f32,
 ) {
+    let a = cf.a;
+    let b = cf.b;
     // Draw degenerate caustic at λ = B: segment between foci (±c, 0)
     let c = (a - b).sqrt();
     let f1 = cam.world_to_screen(vec2(-c, 0.0), w, h);
@@ -185,7 +187,7 @@ pub fn draw_caustic(
     if (lam - b).abs() < 0.03 || (lam - a).abs() < 0.03 {
         return;
     }
-    let quad = quadratic::confocal(a, b, lam);
+    let quad = quadratic::confocal(cf, lam);
     let pts = quad.sample_boundary(80);
     for &p in &pts {
         if domain.contains(p) {

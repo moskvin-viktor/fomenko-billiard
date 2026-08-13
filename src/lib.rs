@@ -1,3 +1,4 @@
+pub mod app;
 pub mod confocal;
 pub mod domain;
 pub mod phase3d;
@@ -7,9 +8,7 @@ pub mod render;
 pub mod second_integral;
 pub mod torus;
 pub mod torus_render;
-
-pub const A: f32 = 4.0;
-pub const B: f32 = 1.0;
+pub mod ui;
 
 pub use confocal::TorusRegime;
 
@@ -25,8 +24,6 @@ use macroquad::prelude::*;
 /// θ/π ∈ [-1, 1], and `center` is a fixed interior point.  We return a single
 /// trajectory start at `center` with velocity direction `θ = lam·π`.
 pub fn get_start_points(
-    _a: f32,
-    _b: f32,
     lam: f32,
     dom: &domain::Domain,
     is_confocal: bool,
@@ -62,12 +59,7 @@ pub fn dense_caustic_starts(
 }
 
 /// One start point per connected component of the caustic ∩ domain.
-pub fn start_points_on_caustic(
-    _a: f32,
-    _b: f32,
-    lam: f32,
-    dom: &domain::Domain,
-) -> Vec<(Vec2, Vec2)> {
+pub fn start_points_on_caustic(lam: f32, dom: &domain::Domain) -> Vec<(Vec2, Vec2)> {
     let structure = confocal::ConfocalStructure::of_domain(dom)
         .expect("a confocal domain must have a confocal structure");
     confocal::caustic_starts(&structure, dom, lam, confocal::CausticSampling::Sparse, 0)

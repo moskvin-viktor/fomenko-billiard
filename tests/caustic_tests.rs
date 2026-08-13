@@ -1,4 +1,4 @@
-use billiards::{domain, presets, A, B};
+use billiards::{domain, presets, torus::ConfocalParams};
 use macroquad::prelude::*;
 
 /// Inside test that handles both quadrilaterals and complex shapes.
@@ -8,8 +8,8 @@ fn point_inside(p: Vec2, domain: &domain::Domain) -> bool {
     let mut ell_lambdas = Vec::new();
     let mut hyp_lambdas = Vec::new();
     let mut quad_count = 0;
-    let mut aa = A;
-    let mut bb = B;
+    let mut aa = 0.0f32;
+    let mut bb = 0.0f32;
     for seg in &domain.segments {
         if let domain::Segment::Quad { curve, .. } = seg {
             quad_count += 1;
@@ -72,8 +72,12 @@ fn check_trajectory_stays_inside(
     // (min λ_hyp > B, defining the right/left walls).
     let mut ell_lambdas = Vec::new();
     let mut hyp_lambdas = Vec::new();
+    let mut aa = 0.0f32;
+    let mut bb = 0.0f32;
     for seg in &domain.segments {
         if let domain::Segment::Quad { curve, .. } = seg {
+            aa = curve.a_param;
+            bb = curve.b_param;
             if curve.lambda < curve.b_param {
                 ell_lambdas.push(curve.lambda);
             }
@@ -103,13 +107,14 @@ fn check_trajectory_stays_inside(
             let le = lambda_ell.unwrap();
             let lh = lambda_hyp.unwrap();
             let slack = 1e-2;
-            let inside_ell =
-                (B - le) * mid.x * mid.x + (A - le) * mid.y * mid.y - (A - le) * (B - le) < slack;
+            let inside_ell = (bb - le) * mid.x * mid.x + (aa - le) * mid.y * mid.y
+                - (aa - le) * (bb - le)
+                < slack;
             if !inside_ell {
                 false
             } else {
                 let h_val =
-                    (B - lh) * mid.x * mid.x + (A - lh) * mid.y * mid.y - (A - lh) * (B - lh);
+                    (bb - lh) * mid.x * mid.x + (aa - lh) * mid.y * mid.y - (aa - lh) * (bb - lh);
                 h_val > -slack
             }
         } else {
@@ -130,14 +135,15 @@ fn test_confocal_trajectories(preset: &presets::Preset) {
     let label = preset.label;
 
     // Extract boundary lambdas, using the same logic as the library.
+    let cf = ConfocalParams::standard();
     let mut ell_lambdas = Vec::new();
     let mut hyp_lambdas = Vec::new();
     for seg in &domain.segments {
         if let domain::Segment::Quad { curve, .. } = seg {
-            if curve.lambda < B {
+            if curve.lambda < cf.b {
                 ell_lambdas.push(curve.lambda);
             }
-            if curve.lambda > B {
+            if curve.lambda > cf.b {
                 hyp_lambdas.push(curve.lambda);
             }
         }
@@ -155,16 +161,16 @@ fn test_confocal_trajectories(preset: &presets::Preset) {
 
     let e = 0.05;
     let ell_min = lambda_ell + e;
-    let ell_max = B - e;
+    let ell_max = cf.b - e;
     let hyp_min = lambda_hyp + e;
-    let hyp_max = A - e;
+    let hyp_max = cf.a - e;
 
     let eps = 0.15;
 
     // Ellipse side
     let mut lam = ell_min;
     while lam < ell_max {
-        let starts = billiards::get_start_points(A, B, lam, domain, true, vec2(0.0, 0.0));
+        let starts = billiards::get_start_points(lam, domain, true, vec2(0.0, 0.0));
         for (i, &(p, v)) in starts.iter().enumerate() {
             check_trajectory_stays_inside(domain, p, v, 300, label, lam, i);
         }
@@ -172,7 +178,7 @@ fn test_confocal_trajectories(preset: &presets::Preset) {
     }
     // Edge cases
     for &lam in &[ell_min, ell_max, (ell_min + ell_max) / 2.0] {
-        let starts = billiards::get_start_points(A, B, lam, domain, true, vec2(0.0, 0.0));
+        let starts = billiards::get_start_points(lam, domain, true, vec2(0.0, 0.0));
         for (i, &(p, v)) in starts.iter().enumerate() {
             check_trajectory_stays_inside(domain, p, v, 300, label, lam, i);
         }
@@ -181,14 +187,14 @@ fn test_confocal_trajectories(preset: &presets::Preset) {
     // Hyperbola side
     let mut lam = hyp_min;
     while lam < hyp_max {
-        let starts = billiards::get_start_points(A, B, lam, domain, true, vec2(0.0, 0.0));
+        let starts = billiards::get_start_points(lam, domain, true, vec2(0.0, 0.0));
         for (i, &(p, v)) in starts.iter().enumerate() {
             check_trajectory_stays_inside(domain, p, v, 300, label, lam, i);
         }
         lam += eps;
     }
     for &lam in &[hyp_min, hyp_max, (hyp_min + hyp_max) / 2.0] {
-        let starts = billiards::get_start_points(A, B, lam, domain, true, vec2(0.0, 0.0));
+        let starts = billiards::get_start_points(lam, domain, true, vec2(0.0, 0.0));
         for (i, &(p, v)) in starts.iter().enumerate() {
             check_trajectory_stays_inside(domain, p, v, 300, label, lam, i);
         }
@@ -213,14 +219,14 @@ fn test_polyline_trajectories(preset: &presets::Preset) {
     let eps = 0.15;
     let mut theta = -1.0;
     while theta <= 1.0 {
-        let starts = billiards::get_start_points(A, B, theta, domain, false, center);
+        let starts = billiards::get_start_points(theta, domain, false, center);
         for (i, &(p, v)) in starts.iter().enumerate() {
             check_trajectory_stays_inside(domain, p, v, 300, label, theta, i);
         }
         theta += eps;
     }
     for &theta in &[-1.0, -0.5, 0.0, 0.5, 1.0] {
-        let starts = billiards::get_start_points(A, B, theta, domain, false, center);
+        let starts = billiards::get_start_points(theta, domain, false, center);
         for (i, &(p, v)) in starts.iter().enumerate() {
             check_trajectory_stays_inside(domain, p, v, 300, label, theta, i);
         }
@@ -302,14 +308,15 @@ fn test_all_lambda_start_points() {
             continue;
         }
 
+        let cf = ConfocalParams::standard();
         let mut ell_lambdas = Vec::new();
         let mut hyp_lambdas = Vec::new();
         for seg in &domain.segments {
             if let domain::Segment::Quad { curve, .. } = seg {
-                if curve.lambda < B {
+                if curve.lambda < cf.b {
                     ell_lambdas.push(curve.lambda);
                 }
-                if curve.lambda > B {
+                if curve.lambda > cf.b {
                     hyp_lambdas.push(curve.lambda);
                 }
             }
@@ -323,10 +330,10 @@ fn test_all_lambda_start_points() {
 
         let e = 0.05f32;
         let ell_min = lambda_ell + e;
-        let ell_max = B - e;
+        let ell_max = cf.b - e;
         let mut lam = ell_min;
         while lam < ell_max {
-            let starts = billiards::start_points_on_caustic(A, B, lam, domain);
+            let starts = billiards::start_points_on_caustic(lam, domain);
             for (i, &(p, _)) in starts.iter().enumerate() {
                 assert!(
                     point_inside(p, domain),
@@ -337,7 +344,7 @@ fn test_all_lambda_start_points() {
                     p.x,
                     p.y,
                 );
-                let q = billiards::quadratic::confocal(A, B, lam).eval(p);
+                let q = billiards::quadratic::confocal(cf, lam).eval(p);
                 assert!(
                     q.abs() < 1e-3,
                     "{} | Λ={} | start {}: off caustic! Q={} pos=({}, {})",
@@ -353,10 +360,10 @@ fn test_all_lambda_start_points() {
         }
 
         let hyp_min = lambda_hyp + e;
-        let hyp_max = A - e;
+        let hyp_max = cf.a - e;
         let mut lam = hyp_min;
         while lam < hyp_max {
-            let starts = billiards::start_points_on_caustic(A, B, lam, domain);
+            let starts = billiards::start_points_on_caustic(lam, domain);
             for (i, &(p, _)) in starts.iter().enumerate() {
                 assert!(
                     point_inside(p, domain),
@@ -367,7 +374,7 @@ fn test_all_lambda_start_points() {
                     p.x,
                     p.y,
                 );
-                let q = billiards::quadratic::confocal(A, B, lam).eval(p);
+                let q = billiards::quadratic::confocal(cf, lam).eval(p);
                 assert!(
                     q.abs() < 1e-3,
                     "{} | Λ={} | start {}: off caustic! Q={} pos=({}, {})",

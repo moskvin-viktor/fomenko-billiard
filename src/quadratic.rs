@@ -1,3 +1,4 @@
+use crate::torus::ConfocalParams;
 use macroquad::prelude::*;
 
 /// Confocal quadric family:
@@ -163,7 +164,9 @@ impl ConfocalQuadric {
     /// Tangent: (-(a-Λ)y, (b-Λ)x)  — rotates gradient 90° CW.
     ///
     /// We pick the sign closest to `hint_dir`.
-    pub fn velocity_from_caustic(a: f32, b: f32, p: Vec2, lambda: f32, hint_dir: Vec2) -> Vec2 {
+    pub fn velocity_from_caustic(cf: ConfocalParams, p: Vec2, lambda: f32, hint_dir: Vec2) -> Vec2 {
+        let a = cf.a;
+        let b = cf.b;
         // ∇Q_Λ(p) = (2(b-Λ)x, 2(a-Λ)y)
         // Tangent (perpendicular, rotated 90° CW): (-(a-Λ)y, (b-Λ)x)
         let t = vec2(-(a - lambda) * p.y, (b - lambda) * p.x);
@@ -185,10 +188,10 @@ impl ConfocalQuadric {
 // ---------------------------------------------------------------------------
 
 /// Create a confocal quadric: (b − λ)x² + (a − λ)y² = (a − λ)(b − λ).
-pub fn confocal(a: f32, b: f32, lambda: f32) -> ConfocalQuadric {
+pub fn confocal(cf: ConfocalParams, lambda: f32) -> ConfocalQuadric {
     ConfocalQuadric {
-        a_param: a,
-        b_param: b,
+        a_param: cf.a,
+        b_param: cf.b,
         lambda,
     }
 }
@@ -198,13 +201,12 @@ pub fn confocal(a: f32, b: f32, lambda: f32) -> ConfocalQuadric {
 ///   0 = top (ellipse, right → left), 1 = left (hyperbola, top → bottom),
 ///   2 = bottom (ellipse, left → right), 3 = right (hyperbola, bottom → top).
 pub fn quadrilateral_arcs(
-    a: f32,
-    b: f32,
+    cf: ConfocalParams,
     lambda_ell: f32,
     lambda_hyp: f32,
 ) -> Vec<(Vec2, Vec2, ConfocalQuadric)> {
-    let ell = confocal(a, b, lambda_ell);
-    let hyp = confocal(a, b, lambda_hyp);
+    let ell = confocal(cf, lambda_ell);
+    let hyp = confocal(cf, lambda_hyp);
 
     let pts = ConfocalQuadric::intersections(&ell, &hyp)
         .expect("The two confocal quadrics must intersect");

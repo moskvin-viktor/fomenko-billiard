@@ -9,28 +9,30 @@
 //!
 //! They are the behaviour the (upcoming) `rebuild()` refactor must preserve.
 
-use billiards::{phase3d, presets, A, B};
+use billiards::{phase3d, presets, torus::ConfocalParams};
 use macroquad::prelude::{vec2, Vec2};
 
 /// Choose a valid Λ on the ellipse (Λ < B) side for a domain.
 fn ellipse_lambda(domain: &billiards::domain::Domain) -> f32 {
+    let cf = ConfocalParams::standard();
     let mut ell = f32::MAX;
     for seg in &domain.segments {
         if let billiards::domain::Segment::Quad { curve, .. } = seg {
-            if curve.lambda < B {
+            if curve.lambda < cf.b {
                 ell = ell.min(curve.lambda);
             }
         }
     }
-    (ell + 0.05 + B - 0.05) / 2.0
+    (ell + 0.05 + cf.b - 0.05) / 2.0
 }
 
 /// Choose a valid Λ on the hyperbola (Λ > B) side for a domain.
 fn hyperbola_lambda(domain: &billiards::domain::Domain) -> f32 {
+    let cf = ConfocalParams::standard();
     let mut hyp = f32::MAX;
     for seg in &domain.segments {
         if let billiards::domain::Segment::Quad { curve, .. } = seg {
-            if curve.lambda > B {
+            if curve.lambda > cf.b {
                 hyp = hyp.min(curve.lambda);
             }
         }
@@ -49,7 +51,8 @@ fn highlight(domain: &billiards::domain::Domain, p: Vec2, v: Vec2) -> Vec<phase3
 /// `to_torus`): hyperbola/polyline → 0; quadrilateral + ellipse → sign(y);
 /// full-ellipse fallback (L-shape) → sign of angular momentum.
 fn torus_key(p: Vec2, v: Vec2, is_confocal: bool, lam: f32, is_quad: bool) -> u32 {
-    if !is_confocal || lam >= B {
+    let cf = ConfocalParams::standard();
+    if !is_confocal || lam >= cf.b {
         0
     } else if is_quad {
         if p.y >= 0.0 {
@@ -92,7 +95,7 @@ fn distinct_tori_for_lambda(
     is_confocal: bool,
     center: Vec2,
 ) -> Vec<u32> {
-    let starts = billiards::get_start_points(A, B, lam, domain, is_confocal, center);
+    let starts = billiards::get_start_points(lam, domain, is_confocal, center);
     assert!(!starts.is_empty(), "no start points for Λ={}", lam);
 
     let mut seen: Vec<u32> = Vec::new();
@@ -198,7 +201,7 @@ fn billiard_picks_are_consistent_with_torus_highlights() {
         };
 
         for lam in lams {
-            let starts = billiards::get_start_points(A, B, lam, domain, preset.is_confocal, center);
+            let starts = billiards::get_start_points(lam, domain, preset.is_confocal, center);
             let is_quad = is_quad_confocal(domain);
 
             // Distinct keys the billiard would pick (one_per_torus, in order),
@@ -270,7 +273,7 @@ fn highlights_are_on_same_tori_as_dense_fill() {
                 })
                 .collect();
 
-            let starts = billiards::get_start_points(A, B, lam, domain, true, preset.start_center);
+            let starts = billiards::get_start_points(lam, domain, true, preset.start_center);
             for (p, v) in starts {
                 if let Some(pt) = highlight(domain, p, v).first() {
                     assert!(
@@ -296,9 +299,9 @@ fn highlights_are_on_same_tori_as_dense_fill() {
 #[test]
 fn reflect_is_an_isometry() {
     use billiards::{domain, quadratic};
-    let a = A;
-    let b = B;
-    let quad = quadratic::confocal(a, b, 0.5);
+    let cf = ConfocalParams::standard();
+    let b = cf.b;
+    let quad = quadratic::confocal(cf, 0.5);
 
     // A point on each wall where reflection happens.
     let line = domain::Segment::Line {
@@ -344,7 +347,7 @@ fn torus_bounds_conventions() {
         let mut ell_boundary: Option<f32> = None;
         for seg in &domain.segments {
             if let billiards::domain::Segment::Quad { curve, .. } = seg {
-                if curve.lambda < B {
+                if curve.lambda < ConfocalParams::standard().b {
                     ell_boundary = Some(ell_boundary.map_or(curve.lambda, |e| e.min(curve.lambda)));
                 }
             }

@@ -20,9 +20,10 @@ impl ConfocalParams {
     }
 
     /// The confocal family in which every billiard in this crate lives
-    /// (`crate::A`, `crate::B`).
+    /// (`a = 4.0`, `b = 1.0`).  This is the single source of truth for the
+    /// family; everything else derives from it.
     pub fn standard() -> Self {
-        Self::new(crate::A, crate::B)
+        Self::new(4.0, 1.0)
     }
 }
 
