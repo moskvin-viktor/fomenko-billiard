@@ -36,6 +36,11 @@ struct ViewState {
     phase_trajectories: Vec<Vec<phase3d::PhasePoint>>,
     /// Short (few-bounce) phase-space highlights drawn red on the torus.
     torus_highlights: Vec<Vec<phase3d::PhasePoint>>,
+    /// Flat-chart trajectories for a pseudo-integrable table (the L).  When
+    /// non-empty, the 3D view renders these instead of the torus path.
+    flat_trajectories: Vec<Vec<crate::pseudo::FlatPhasePoint>>,
+    /// The classified level of the current flat view (torus vs genus-2).
+    flat_level: Option<crate::pseudo::Level>,
 }
 
 impl ViewState {
@@ -46,6 +51,8 @@ impl ViewState {
             trajectories: Vec::new(),
             phase_trajectories: Vec::new(),
             torus_highlights: Vec::new(),
+            flat_trajectories: Vec::new(),
+            flat_level: None,
         }
     }
 
@@ -71,6 +78,33 @@ impl ViewState {
             .collect();
 
         if show_3d {
+            // Pseudo-integrable table (the L): classify the level and sample
+            // through the flat chart, so torus levels render as a torus and
+            // genus-2 levels as the unfolded cross.
+            let cf = crate::torus::ConfocalParams::standard();
+            let table = crate::table::Table::from_domain(domain, &cf);
+            if let Some(tab) = table {
+                let level = crate::pseudo::classify_level(second_int, &tab, &cf, 1e-9, 1e-9);
+                match &level {
+                    crate::pseudo::Level::Torus { .. }
+                    | crate::pseudo::Level::GenusSurface { .. } => {
+                        let dense_starts = crate::dense_caustic_starts(domain, second_int, 24);
+                        self.flat_trajectories = dense_starts
+                            .iter()
+                            .map(|&(p, v)| {
+                                crate::pseudo::sample_flat_trajectory(domain, p, v, 200, 8, &level)
+                            })
+                            .collect();
+                        self.flat_level = Some(level);
+                        // Clear the torus path for this view.
+                        self.phase_trajectories.clear();
+                        self.torus_highlights.clear();
+                        return;
+                    }
+                    _ => {}
+                }
+            }
+
             // Dense fill of the 3D Liouville torus.  Densely sample the caustic
             // so the union of trajectories sweeps out the full torus surface; a
             // polyline domain has only its single start point.
@@ -98,6 +132,8 @@ impl ViewState {
         } else {
             self.phase_trajectories.clear();
             self.torus_highlights.clear();
+            self.flat_trajectories.clear();
+            self.flat_level = None;
         }
     }
 }
@@ -285,23 +321,32 @@ impl App {
             // ---- 3D phase space view ----
             self.cam3d.handle_input();
             phase3d::draw_axes(&self.cam3d, w, h, cache.domain_extent);
-            // Dense points fill the 2D Liouville torus surface.  Rasterized
-            // into an offscreen target and blitted; re-rasterized only when the
-            // camera or geometry changes.
-            self.torus_render.draw(
-                &self.view.phase_trajectories,
-                &self.view.torus_highlights,
-                &self.cam3d,
-                w,
-                h,
-            );
 
-            let info = format!(
+            // Pseudo-integrable table (the L): draw the flat surface (torus for
+            // torus levels, unfolded cross for genus-2).  Otherwise fall back to
+            // the cached torus render.
+            if let Some(level) = &self.view.flat_level {
+                crate::pseudo::draw_flat(&self.view.flat_trajectories, level, &self.cam3d, w, h);
+            } else {
+                // Dense points fill the 2D Liouville torus surface.  Rasterized
+                // into an offscreen target and blitted; re-rasterized only when
+                // the camera or geometry changes.
+                self.torus_render.draw(
+                    &self.view.phase_trajectories,
+                    &self.view.torus_highlights,
+                    &self.cam3d,
+                    w,
+                    h,
+                );
+            }
+
+            let info =
+                format!(
                 "{}  |  {} = {:.3}  |  {} trajs  |  [P] 2D  |  [A] anim {}  |  right-drag orbit",
                 preset.label,
                 preset.second_integral_label,
                 self.second_int,
-                self.view.phase_trajectories.len(),
+                self.view.flat_trajectories.len().max(self.view.phase_trajectories.len()),
                 if self.animate { "on" } else { "off" },
             );
             draw_text(&info, 12.0, 28.0, 18.0, color_u8!(200, 200, 220, 220));

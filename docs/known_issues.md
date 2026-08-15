@@ -16,6 +16,20 @@ frame (~150K `draw_circle` calls).  Fixed by (1) a point-budget decimation
 (`torus_render::camera_moved`) so sub-jitter drag no longer triggers a re-
 raster.
 
+## ~~L 3D view forced onto a donut~~ (RESOLVED)
+The L-shape's 3D phase-space view was routed entirely through the torus
+machinery (`to_torus` full-ellipse fallback + `torus_embed` donut), so torus
+levels didn't show a torus and genus-2 levels were forced onto a donut.  Now the
+L's 3D view goes through the pseudo machinery (`pseudo/view.rs`):
+- `Level::Torus` → flat rectangle `(u1,u2)` with opposite edges identified → a
+  donut (`pseudo::render::torus_angles` + donut embed).
+- `Level::GenusSurface` → **double torus (pretzel)** embedding
+  (`pseudo::render::pretzel_embed`): two torus lobes joined by a bridge, so the
+  manifold visibly reads as genus 2 (two tori glued).  The flat cross chart is
+  still available via `cross_embed`, but the pretzel is what shows the genus in
+  3D (per doc §12, any 3D genus-2 embedding is a visualization choice; a flat
+  cross reads as planes).
+
 ## 2. ~~`main.rs` is still a thin-shell-plus-widgets monolith~~ (RESOLVED)
 `main.rs` is now a thin shell: the drag widget moved to `src/ui.rs` (`Slider`),
 the app loop + `ViewState` moved to `src/app.rs` (`App`), and `main` just
