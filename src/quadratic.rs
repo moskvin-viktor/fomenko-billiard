@@ -77,9 +77,16 @@ impl ConfocalQuadric {
         if disc < 0.0 {
             return None;
         }
+        // `qa < 0` for a hyperbola (the `b − λ`, `a − λ` coefficients are of
+        // opposite sign), which flips which of t1/t2 is the nearer wall.  The
+        // billiard always hits the nearest positive root (`t` is the travel
+        // distance), so take the smaller, not the algebraically first.
         let sd = disc.sqrt();
-        let t1 = (-qb - sd) / (2.0 * qa);
-        let t2 = (-qb + sd) / (2.0 * qa);
+        let mut t1 = (-qb - sd) / (2.0 * qa);
+        let mut t2 = (-qb + sd) / (2.0 * qa);
+        if t1 > t2 {
+            std::mem::swap(&mut t1, &mut t2);
+        }
 
         let eps = 1e-6;
         let t = if t1 > eps {
@@ -95,6 +102,27 @@ impl ConfocalQuadric {
     /// Centre of the quadric (∇Q = 0).
     pub fn centre(&self) -> Vec2 {
         vec2(0.0, 0.0)
+    }
+
+    /// Whether this quadric is a hyperbola (`b < λ < a`), which has two
+    /// branches (x > 0 and x < 0).  Ellipses (`λ < b`) are single-branched.
+    pub fn is_hyperbola(&self) -> bool {
+        self.lambda > self.b_param
+    }
+
+    /// The branch sign `sign(x)` of a point on this quadric.  For a hyperbola
+    /// this selects which of the two sheets the point is on; for an ellipse it
+    /// is always `+` (single branch).
+    pub fn branch_sign(&self, p: Vec2) -> i8 {
+        if self.is_hyperbola() {
+            if p.x >= 0.0 {
+                1
+            } else {
+                -1
+            }
+        } else {
+            1
+        }
     }
 
     /// Intersection points of two confocal quadrics with the same a, b.

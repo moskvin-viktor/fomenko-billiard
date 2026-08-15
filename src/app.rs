@@ -39,13 +39,18 @@ struct ViewState {
 }
 
 impl ViewState {
-    fn new(idx: usize, configs: &[presets::Preset], second_int: f32, show_3d: bool) -> Self {
-        let mut s = Self {
+    /// An empty view, before the first rebuild against real configs.
+    fn empty() -> Self {
+        Self {
             start_points: Vec::new(),
             trajectories: Vec::new(),
             phase_trajectories: Vec::new(),
             torus_highlights: Vec::new(),
-        };
+        }
+    }
+
+    fn new(idx: usize, configs: &[presets::Preset], second_int: f32, show_3d: bool) -> Self {
+        let mut s = Self::empty();
         s.rebuild(idx, configs, second_int, show_3d);
         s
     }
@@ -135,7 +140,7 @@ impl App {
             animate: false,
             anim_dir: 1.0,
             cam3d: phase3d::OrbitCamera3::new(),
-            view: ViewState::new(0, &[], 0.2, false),
+            view: ViewState::empty(),
             torus_render: crate::torus_render::TorusRender::new(),
             burn_frames: None,
         };

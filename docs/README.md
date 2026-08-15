@@ -8,6 +8,9 @@ Interactive 2D billiard simulation inside confocal quadric domains, built with [
 - **Caustic overlay** — visualize the confocal quadric `Q_Λ(x,y) = 0` that every trajectory is tangent to.
 - **Real-time controls** — adjust the caustic parameter `Λ` with arrow keys, cycle presets with Tab/Space.
 - **L-shaped and square polyline domains** — also supported for comparison.
+- **Pseudo-integrable L (confocal, 3π/2 corner)** — the standard in-quadrant L
+  from `confocal_L_pseudo_integrable.md`: a real 6-arc table whose level sets are
+  genus-2 (flat-coordinate, translation-surface) rather than tori.
 - **Colored trajectory rendering** — hue sweeps from warm to cool along each bounce sequence.
 
 ## Controls

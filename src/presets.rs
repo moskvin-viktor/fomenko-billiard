@@ -50,10 +50,10 @@ pub fn all_presets() -> Vec<Preset> {
         },
         Preset {
             label: "L-shape (confocal, 3π/2 corner)",
-            domain: domain::confocal_lshape(cf, 0.0, 2.5, 3.5, 2.8, 0.7),
+            domain: domain::confocal_lshape_standard(cf, 0.4, 0.8, 1.4, 2.0, 2.6),
             second_integral_label: "Λ",
             is_confocal: true,
-            start_center: vec2(0.0, 0.0),
+            start_center: vec2(1.0, 1.5),
         },
         Preset {
             label: "Square (polyline)",

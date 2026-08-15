@@ -549,22 +549,25 @@ fn test_filled_torus_covers_surface() {
 /// The number of tori must match the number of disconnected caustic regions:
 /// one torus for an ellipse caustic, two tori (left/right lobes) for a
 /// hyperbola caustic.  Each lobe must be a genuine 2D torus, not collapsed.
+///
+/// The L-shape confocal table is EXCLUDED: it is pseudo-integrable (genus-2
+/// level sets, the flat-coordinate case), not a Liouville torus.
 #[test]
 fn test_num_tori_matches_regions() {
     let configs = presets::all_presets();
     for preset in &configs {
-        if !preset.is_confocal {
+        if !preset.is_confocal || preset.label.contains("3π/2") {
             continue;
         }
         let domain = &preset.domain;
 
         // Ellipse caustic → one torus spanning both x-halves.
         let cloud = sample_filled_torus(domain, ellipse_lambda(domain), 40);
-        assert_num_tori(&cloud, false, &format!("{} ellipse", preset.label));
+        assert_num_tori(&cloud, false, &format!("{}", preset.label));
 
         // Hyperbola caustic → two tori (left and right lobes).
         let cloud = sample_filled_torus(domain, hyperbola_lambda(domain), 40);
-        assert_num_tori(&cloud, true, &format!("{} hyperbola", preset.label));
+        assert_num_tori(&cloud, true, &format!("{}", preset.label));
     }
 }
 

@@ -1,35 +1,11 @@
 # Known Issues & Remaining Work
 
-Status of open problems and intentional follow-ups. The **first item is the only
-known *bug* with a failing test**; the rest are structural/debt items.
-
-## 1. L-shape 2D/3D divergence — the only failing test (BUG)
-**Failing test:** `billiard_picks_are_consistent_with_torus_highlights`
-(`tests/highlight_invariants.rs`).
-
-At an **ellipse caustic** on the **L-shape** confocal preset, the 2D view and
-the 3D torus disagree on the number of tori:
-
-```
-L-shape (confocal, 3π/2 corner) Λ=0.49999997:
-2D picks 2 keys [1, 0] but 3D shows 1 tori [1];
-empty-phase starts: [(1, (-1.60,-0.37)), (3, (1.83,-0.15))]
-```
-
-**Root cause(s):**
-- `ViewState::rebuild` builds `torus_highlights` by tracing **only 4 bounces** and
-  then silently `.filter(|t| !t.is_empty())`. For two of the L-shape's four
-  caustic starts the 4-bounce phase trace comes back **empty** (start point too
-  near a corner / degenerate), so those tori are dropped from the 3D view.
-- Meanwhile the billiard's `one_per_torus` (in `render.rs`) counts *all* the
-  starts (including the ones that trace empty highlights), so it still sees 2
-  distinct tori. The two views diverge by construction.
-
-**Likely fix direction:** make the 2D picker and the 3D highlights derive keys
-from a *single* source of truth — pick one trajectory per torus **off the
-filtered highlights** (the `torus_index` actually present) rather than counting
-pre-filter starts. `ConfocalStructure` (added today) now centralizes the
-`regime`/`contains`/`caustic_starts` logic, giving this fix one home.
+Status of open problems and intentional follow-ups. Nothing here is a currently
+failing test (all four suites are green); the L-shape 2D/3D divergence that used
+to be item #1 was resolved by replacing the old all-quadrant `confocal_lshape`
+preset with the in-quadrant standard L from `docs/confocal_L_pseudo_integrable.md`
+(a real 6-arc table matching the doc's §2) and making quadric-arc intersection
+branch-aware + conic-angle-parameterized.
 
 ## 2. ~~`main.rs` is still a thin-shell-plus-widgets monolith~~ (RESOLVED)
 `main.rs` is now a thin shell: the drag widget moved to `src/ui.rs` (`Slider`),

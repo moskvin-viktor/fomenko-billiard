@@ -201,6 +201,10 @@ pub fn caustic_starts(
     let n_samples = sampling.n_samples();
     let pts = quad.sample_boundary(n_samples);
 
+    // Analytic table membership for in-quadrant non-convex tables (e.g. the
+    // standard L), which the ray-cast `dom.contains` handles unreliably.
+    let table = crate::table::Table::from_domain(dom, &structure.cf);
+
     // Extra slack for component detection on non-quadrilaterals where the
     // containing ray-cast is unreliable near the boundary.
     let detect_slack = if structure.is_quadrilateral {
@@ -210,7 +214,9 @@ pub fn caustic_starts(
     };
     let mut inside: Vec<bool> = Vec::with_capacity(n_samples);
     for &p in &pts {
-        let in_domain = if structure.is_quadrilateral {
+        let in_domain = if let Some(t) = &table {
+            t.contains(p.x, p.y, &structure.cf)
+        } else if structure.is_quadrilateral {
             structure.contains(p, detect_slack)
         } else {
             dom.contains(p)
@@ -306,7 +312,9 @@ fn snap_velocity(
     }
     // The snapped point must be genuinely inside (no slack): the projection can
     // push a sample onto the boundary.
-    let genuinely_inside = if structure.is_quadrilateral {
+    let genuinely_inside = if let Some(t) = &crate::table::Table::from_domain(dom, &structure.cf) {
+        t.contains(q.x, q.y, &structure.cf)
+    } else if structure.is_quadrilateral {
         structure.contains(q, 0.0)
     } else {
         dom.contains(q)

@@ -51,7 +51,7 @@ impl Segment {
                 let ap = *a - p;
                 let t = (ap.x * ab.y - ap.y * ab.x) / denom;
                 let s = (ap.x * dir.y - ap.y * dir.x) / denom;
-                if s >= 0.0 && s <= 1.0 && t > 1e-8 {
+                if (0.0..=1.0).contains(&s) && t > 1e-8 {
                     Some((t, p + dir * t, s))
                 } else {
                     None
@@ -60,58 +60,72 @@ impl Segment {
             Segment::Quad { curve, a, b } => {
                 let t = curve.intersect(p, dir)?;
                 let hit = p + dir * t;
-                if !between_angles(hit, *a, *b, curve.centre()) {
+                if !on_arc(hit, *a, *b, curve) {
                     return None;
                 }
-                let centre = curve.centre();
-                let ha = (hit - centre).y.atan2((hit - centre).x);
-                let aa = (*a - centre).y.atan2((*a - centre).x);
-                let ba = (*b - centre).y.atan2((*b - centre).x);
-                Some((t, hit, angle_frac(ha, aa, ba)))
+                let s = arc_frac(hit, *a, *b, curve);
+                Some((t, hit, s))
             }
         }
     }
 }
 
-fn norm_angle(mut ang: f32) -> f32 {
-    while ang < 0.0 {
-        ang += 2.0 * std::f32::consts::PI;
-    }
-    while ang >= 2.0 * std::f32::consts::PI {
-        ang -= 2.0 * std::f32::consts::PI;
-    }
-    ang
+/// True if `x` lies between `a` and `b` (inclusive), using the ordered pair.
+fn between(x: f32, a: f32, b: f32) -> bool {
+    let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+    x >= lo - 1e-4 && x <= hi + 1e-4
 }
 
-/// Check whether `hit` lies on the shorter arc from `a` to `b` (CCW)
-/// as seen from `centre`.
-fn between_angles(hit: Vec2, a: Vec2, b: Vec2, centre: Vec2) -> bool {
-    let ha = norm_angle((hit - centre).y.atan2((hit - centre).x));
-    let aa = norm_angle((a - centre).y.atan2((a - centre).x));
-    let ba = norm_angle((b - centre).y.atan2((b - centre).x));
-
-    if ba > aa {
-        ha >= aa - 0.05 && ha <= ba + 0.05
-    } else {
-        ha >= aa - 0.05 || ha <= ba + 0.05
+/// Whether `hit` lies on the quadric arc from `a` to `b`, insensitive to the
+/// polar angle from the origin.
+///
+/// For a hyperbola (`b < λ < a`) we restrict to the branch of the endpoints
+/// (sign(x)) and use that `y` is monotone along a branch.  For an ellipse
+/// (`λ < b`) we use the conic parameter angle `θ` with
+/// `x = √(a−λ) cos θ, y = √(b−λ) sin θ` — the polar angle is *not* an affine
+/// function of `θ` unless `a−λ = b−λ`, which is why the old origin-angle test
+/// was wrong.  Both endpoints' coordinates are single-quadrant for the tables
+/// in this crate; when they straddle quadrants the range test below still
+/// holds because the arc spans monotonically.
+fn on_arc(hit: Vec2, a: Vec2, b: Vec2, curve: &ConfocalQuadric) -> bool {
+    if curve.is_hyperbola() {
+        // Same branch, then y monotone along the branch.
+        return curve.branch_sign(hit) == curve.branch_sign(a) && between(hit.y, a.y, b.y);
     }
+    // Ellipse: conic angle θ.  `x = √(a−λ) cos θ, y = √(b−λ) sin θ`.  Within
+    // a single quadrant θ is monotonic along the arc, so a plain range test is
+    // exact.  (The polar angle from the origin is NOT an affine function of θ,
+    // which is why the old origin-angle test misread in-quadrant arcs.)
+    let theta = |p: Vec2| {
+        let ca = (curve.a_param - curve.lambda).max(1e-30).sqrt();
+        let cb = (curve.b_param - curve.lambda).max(1e-30).sqrt();
+        (p.y / cb).atan2(p.x / ca)
+    };
+    between(theta(hit), theta(a), theta(b))
 }
 
-/// Fraction along the arc from aa to ba (CCW).
-fn angle_frac(mut ha: f32, aa: f32, mut ba: f32) -> f32 {
-    ha = norm_angle(ha);
-    let aa = norm_angle(aa);
-    ba = norm_angle(ba);
-
-    if ba > aa {
-        (ha - aa) / (ba - aa)
-    } else {
-        let ha_wrapped = if ha < aa {
-            ha + 2.0 * std::f32::consts::PI
+/// Normalised position `s ∈ [0, 1]` along the arc `a → b`.
+fn arc_frac(hit: Vec2, a: Vec2, b: Vec2, curve: &ConfocalQuadric) -> f32 {
+    if curve.is_hyperbola() {
+        // y is monotone along a branch.
+        if (b.y - a.y).abs() < 1e-9 {
+            0.5
         } else {
-            ha
+            ((hit.y - a.y) / (b.y - a.y)).clamp(0.0, 1.0)
+        }
+    } else {
+        // Ellipse: monotone in conic angle θ.
+        let theta = |p: Vec2| {
+            let ca = (curve.a_param - curve.lambda).max(1e-30).sqrt();
+            let cb = (curve.b_param - curve.lambda).max(1e-30).sqrt();
+            (p.y / cb).atan2(p.x / ca)
         };
-        (ha_wrapped - aa) / (ba + 2.0 * std::f32::consts::PI - aa)
+        let (ta, tb) = (theta(a), theta(b));
+        if (ta - tb).abs() < 1e-9 {
+            0.5
+        } else {
+            ((theta(hit) - ta) / (tb - ta)).clamp(0.0, 1.0)
+        }
     }
 }
 
@@ -131,9 +145,9 @@ impl Domain {
     pub fn corners(&self) -> Vec<Vec2> {
         self.segments
             .windows(2)
-            .filter_map(|w| match &w[0] {
-                Segment::Line { b, .. } => Some(*b),
-                Segment::Quad { b, .. } => Some(*b),
+            .map(|w| match &w[0] {
+                Segment::Line { b, .. } => *b,
+                Segment::Quad { b, .. } => *b,
             })
             .collect()
     }
@@ -181,7 +195,7 @@ impl Domain {
         let corners: Vec<(Vec2, f32)> = self
             .segments
             .windows(2)
-            .filter_map(|w| {
+            .map(|w| {
                 let corner = match &w[0] {
                     Segment::Line { b, .. } => *b,
                     Segment::Quad { b, .. } => *b,
@@ -189,7 +203,7 @@ impl Domain {
                 let n1 = w[0].inward_normal(corner);
                 let n2 = w[1].inward_normal(corner);
                 let angle = n1.angle_between(n2).abs();
-                Some((corner, angle))
+                (corner, angle)
             })
             .collect();
 
@@ -234,25 +248,53 @@ impl Domain {
                     pts.push(*b);
                 }
                 Segment::Quad { curve, a, b } => {
-                    let centre = curve.centre();
-                    let aa = norm_angle((*a - centre).y.atan2((*a - centre).x));
-                    let ba = norm_angle((*b - centre).y.atan2((*b - centre).x));
-                    let mut delta = ba - aa;
-                    if delta <= 0.0 {
-                        delta += 2.0 * std::f32::consts::PI;
-                    }
-                    let steps = (delta / std::f32::consts::PI * n as f32).max(3.0) as usize;
-
-                    for i in 0..=steps {
-                        let frac = i as f32 / steps as f32;
-                        let angle = aa + frac * delta;
-                        let dir = vec2(angle.cos(), angle.sin());
-                        if let Some(t) = curve.intersect(centre + 0.001 * dir, dir) {
-                            pts.push(centre + dir * t);
-                        }
-                    }
+                    sample_quadric_arc(curve, *a, *b, n)
+                        .into_iter()
+                        .for_each(|p| pts.push(p));
                 }
             }
+        }
+        pts
+    }
+}
+
+/// Sample points along a confocal-quadric arc from `a` to `b`, parameterized
+/// by the **conic parameter** rather than the polar angle from the origin.
+///
+/// For an ellipse the conic angle `θ` (with `x = √(a−λ) cos θ`, `y = √(b−λ) sin
+/// θ`) is monotonic along a single-quadrant arc; for a hyperbola the branch's
+/// `y` is monotonic and `x` follows the branch.  This renders the arc exactly
+/// where `intersect`/`on_arc` put it, instead of casting origin-rays (which hit
+/// the wrong hyperbola branch or fill the ellipse interior).
+fn sample_quadric_arc(curve: &ConfocalQuadric, a: Vec2, b: Vec2, n: usize) -> Vec<Vec2> {
+    let lam = curve.lambda;
+    let ca = (curve.a_param - lam).max(1e-30);
+    if curve.is_hyperbola() {
+        // Branch x≥0 (or x<0): x²/(a−λ) − y²/(λ−b) = 1,
+        // so x = ±√(ca)·√(1 + y²/(λ−b)), y monotone between endpoints.
+        let d = (lam - curve.b_param).max(1e-30);
+        let sign = if a.x >= 0.0 { 1.0 } else { -1.0 };
+        let (y0, y1) = (a.y, b.y);
+        let steps = n.max(3);
+        let mut pts = Vec::with_capacity(steps + 1);
+        for i in 0..=steps {
+            let t = i as f32 / steps as f32;
+            let y = y0 + (y1 - y0) * t;
+            let x = sign * (ca * (1.0 + y * y / d)).max(0.0).sqrt();
+            pts.push(vec2(x, y));
+        }
+        pts
+    } else {
+        // Ellipse: conic angle θ.
+        let cb = (curve.b_param - lam).max(1e-30);
+        let theta = |p: Vec2| (p.y / cb.sqrt()).atan2(p.x / ca.sqrt());
+        let (t0, t1) = (theta(a), theta(b));
+        let steps = n.max(3);
+        let mut pts = Vec::with_capacity(steps + 1);
+        for i in 0..=steps {
+            let f = i as f32 / steps as f32;
+            let th = t0 + (t1 - t0) * f;
+            pts.push(vec2(ca.sqrt() * th.cos(), cb.sqrt() * th.sin()));
         }
         pts
     }
@@ -397,6 +439,99 @@ pub fn confocal_lshape(
             curve: hyp_right,
             a: br_or,
             b: tr_or,
+        },
+    ])
+}
+
+/// Standard L-shape from the pseudo-integrable doc (§2): the region
+/// `([0, α₁] × [β₁, β₃]) ∪ ([0, α₂] × [β₁, β₂])` in the (λ₁, λ₂) chart, with
+/// `0 < α₁ < α₂ < b < β₁ < β₂ < β₃ < a`.
+///
+/// An **in-quadrant** table (strictly inside x>0, y>0) so the λ-chart is 1:1
+/// (no fold labels needed).  Six corners: five convex, one reflex at
+/// `(λ₁, λ₂) = (α₁, β₂)`.
+///
+/// Walls (CCW):
+///   1. outer ellipse λ₁=0 (tall leg's left),
+///   2. hyperbola β₁ (base bottom),
+///   3. ellipse α₂ (base right),
+///   4. hyperbola β₂ (step — top of the base),
+///   5. ellipse α₁ (tall leg's right),
+///   6. hyperbola β₃ (top).
+pub fn confocal_lshape_standard(
+    cf: ConfocalParams,
+    alpha1: f32,
+    alpha2: f32,
+    beta1: f32,
+    beta2: f32,
+    beta3: f32,
+) -> Domain {
+    let a = cf.a;
+    let b = cf.b;
+    use crate::quadratic::ConfocalQuadric;
+
+    let q = |lam| ConfocalQuadric {
+        a_param: a,
+        b_param: b,
+        lambda: lam,
+    };
+    let ell_outer = q(0.0);
+    let ell_alpha1 = q(alpha1);
+    let ell_alpha2 = q(alpha2);
+    let hyp_beta1 = q(beta1);
+    let hyp_beta2 = q(beta2);
+    let hyp_beta3 = q(beta3);
+
+    // Corner at the intersection of an ellipse and a hyperbola: take the
+    // top-right image (x>0, y>0), which is the one in the first quadrant.
+    let corner = |ell: &ConfocalQuadric, hyp: &ConfocalQuadric| {
+        ConfocalQuadric::intersections(ell, hyp).expect("confocal intersection")[0]
+    };
+
+    // Six corners, labelled by the (ellipse, hyperbola) walls meeting there.
+    let tl0 = corner(&ell_outer, &hyp_beta1); // (λ₁, λ₂) = (0, β₁)
+    let br_base = corner(&ell_alpha2, &hyp_beta1); // (α₂, β₁)
+    let tr_base = corner(&ell_alpha2, &hyp_beta2); // (α₂, β₂)
+    let reflex = corner(&ell_alpha1, &hyp_beta2); // (α₁, β₂) — reflex corner
+    let tr_tall = corner(&ell_alpha1, &hyp_beta3); // (α₁, β₃)
+    let tl_tall = corner(&ell_outer, &hyp_beta3); // (0, β₃)
+
+    Domain::new(vec![
+        // 1. Hyperbola β₁, outer ellipse → α₂-ellipse (base bottom)
+        Segment::Quad {
+            curve: hyp_beta1,
+            a: tl0,
+            b: br_base,
+        },
+        // 2. Ellipse α₂, from β₁ up to β₂ (base right)
+        Segment::Quad {
+            curve: ell_alpha2,
+            a: br_base,
+            b: tr_base,
+        },
+        // 3. Hyperbola β₂, from (α₂,β₂) back to (α₁,β₂) (step)
+        Segment::Quad {
+            curve: hyp_beta2,
+            a: tr_base,
+            b: reflex,
+        },
+        // 4. Ellipse α₁, from β₂ up to β₃ (tall leg right)
+        Segment::Quad {
+            curve: ell_alpha1,
+            a: reflex,
+            b: tr_tall,
+        },
+        // 5. Hyperbola β₃, from (α₁,β₃) to (0,β₃) (top)
+        Segment::Quad {
+            curve: hyp_beta3,
+            a: tr_tall,
+            b: tl_tall,
+        },
+        // 6. Outer ellipse, from (0,β₃) down to (0,β₁) (left wall, closes)
+        Segment::Quad {
+            curve: ell_outer,
+            a: tl_tall,
+            b: tl0,
         },
     ])
 }
