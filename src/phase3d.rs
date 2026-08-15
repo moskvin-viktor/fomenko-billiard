@@ -25,6 +25,24 @@ impl PhasePoint {
     }
 }
 
+/// The stride for drawing a cloud of `n` points under a `budget` cap, so the
+/// drawn set `0, step, 2·step, …` has at most `budget` elements.
+///
+/// This bounds the per-frame `draw_circle` cost when orbiting (the profiled
+/// ~150K-point wall): larger clouds are decimated, small clouds keep every
+/// point (`step = 1`).
+///
+/// Returns the smallest `step ≥ 1` with `⌊n/step⌋ + 1 ≤ budget`.
+pub fn decimation_step(n: usize, budget: usize) -> usize {
+    assert!(budget >= 1, "budget must be >= 1");
+    if n == 0 || n <= budget {
+        return 1;
+    }
+    // Need ⌊n/step⌋ + 1 ≤ budget  ⇒  n/step < budget  ⇒  step > n/budget.
+    // The smallest such integer is ⌊n/budget⌋ + 1.
+    (n / budget).max(1) + 1
+}
+
 // ----------------------------------------------------------------
 // 3D orbit camera
 // ----------------------------------------------------------------
@@ -448,8 +466,19 @@ pub fn draw_phase_points(
     let r_major = 1.6;
     let r_minor = 0.6;
 
+    // Bound the per-raster point count so orbiting doesn't freeze the app.  A
+    // large cloud is decimated with a uniform stride; the budget keeps the
+    // profiled ~150K-draw_circle wall down to an interactive rate while
+    // preserving spatial coverage.
+    const POINT_BUDGET: usize = 18_000;
+    let total: usize = trajectories.iter().map(|t| t.len()).sum();
+    let step = decimation_step(total, POINT_BUDGET);
+
     for traj in trajectories {
-        for pt in traj {
+        for (pt_idx, pt) in traj.iter().enumerate() {
+            if pt_idx % step != 0 {
+                continue;
+            }
             let (p, normal) = torus_embed(pt, r_major, r_minor, pt.torus_index);
             let s = cam.project(p, win_w, win_h);
             if s.z < -0.1 {

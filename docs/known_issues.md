@@ -7,6 +7,15 @@ preset with the in-quadrant standard L from `docs/confocal_L_pseudo_integrable.m
 (a real 6-arc table matching the doc's §2) and making quadric-arc intersection
 branch-aware + conic-angle-parameterized.
 
+## ~~Orbit freeze in 3D~~ (RESOLVED)
+Orbiting/zooming the 3D phase-space view froze the app: the orbit camera re-
+rasterized the full ~150K-point torus cloud into the offscreen target every
+frame (~150K `draw_circle` calls).  Fixed by (1) a point-budget decimation
+(`phase3d::decimation_step`, a uniform stride capping a rasterization at
+`POINT_BUDGET` while preserving coverage) and (2) a camera-move threshold
+(`torus_render::camera_moved`) so sub-jitter drag no longer triggers a re-
+raster.
+
 ## 2. ~~`main.rs` is still a thin-shell-plus-widgets monolith~~ (RESOLVED)
 `main.rs` is now a thin shell: the drag widget moved to `src/ui.rs` (`Slider`),
 the app loop + `ViewState` moved to `src/app.rs` (`App`), and `main` just

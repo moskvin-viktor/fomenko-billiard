@@ -12,6 +12,12 @@
 use crate::phase3d::{draw_phase_points, draw_phase_trajectories, OrbitCamera3, PhasePoint};
 use macroquad::prelude::*;
 
+/// A cheap fingerprint of the camera state, used to detect when the cached
+/// torus render must be regenerated (orbit/zoom changed).
+pub fn camera_moved(a: (f32, f32, f32), b: (f32, f32, f32), eps: f32) -> bool {
+    (a.0 - b.0).abs() > eps || (a.1 - b.1).abs() > eps || (a.2 - b.2).abs() > eps
+}
+
 /// Cached offscreen render of the torus point cloud.
 pub struct TorusRender {
     /// Offscreen target we rasterize the torus into.
@@ -78,7 +84,13 @@ impl TorusRender {
             self.geom_key = (usize::MAX, usize::MAX, u32::MAX);
         }
 
-        let needs_raster = cam_key != self.camera_key || geom_key != self.geom_key;
+        // Re-rasterize only when the camera actually moved (past a jitter
+        // threshold) or the geometry changed.  Sub-pixel drag would otherwise
+        // trigger a full ~150K-point re-draw every frame, which is the
+        // profiled orbit freeze.
+        const CAM_EPS: f32 = 1e-4;
+        let cam_changed = crate::torus_render::camera_moved(cam_key, self.camera_key, CAM_EPS);
+        let needs_raster = cam_changed || geom_key != self.geom_key;
 
         if needs_raster {
             self.rasterize(trajectories, cam, win_w, win_h);
