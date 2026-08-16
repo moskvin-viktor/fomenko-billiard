@@ -8,8 +8,8 @@
 //!
 //! - [`Level::Torus`] — the flat rectangle `(u1, u2)` with opposite edges
 //!   identified → a donut (via `torus_angles`).
-//! - [`Level::GenusSurface`] — the unfolded cross 12-gon with the four sheets
-//!   stacked in z (via `cross_embed`).
+//! - [`Level::GenusSurface`] — a **double torus (pretzel)**: two torus lobes
+//!   joined by a bridge, so the genus reads as genus 2 (via `pretzel_embed`).
 
 use super::classify::Level;
 use super::map::to_flat;
@@ -80,8 +80,8 @@ pub fn sample_flat_trajectory(
 ///
 /// * `Level::Torus` — each point maps to torus angles `(θ1, θ2)` from the flat
 ///   rectangle, then to a donut (the doc's "revert to normalized angles").
-/// * `Level::GenusSurface` — each point maps into the unfolded cross with its
-///   sheet stacked in z.
+/// * `Level::GenusSurface` — each point maps onto the double-torus pretzel
+///   (two tori glued), colored by sheet.
 pub fn draw_flat(
     trajectories: &[Vec<FlatPhasePoint>],
     level: &Level,

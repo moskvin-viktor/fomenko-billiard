@@ -24,12 +24,21 @@ Interactive 2D billiard simulation inside confocal quadric domains, built with [
 ## Presets
 
 | Label | Domain Type |
-|-------|-------------|
 | Square: ellipse λ=0, hyperbola λ=2.5 | Confocal quadrilateral |
 | Thin: ellipse λ=-1, hyperbola λ=2.8 | Confocal quadrilateral |
 | Flat: ellipse λ=0.5, hyperbola λ=2.2 | Confocal quadrilateral |
-| L-shape (polyline) | L-shaped polygon |
+| L-shape (confocal, 3π/2 corner) | Pseudo-integrable L (standard, in-quadrant) |
 | Square (polyline) | Axis-aligned square |
+| L-shape (polyline) | L-shaped polygon |
+
+## 3D view
+
+The `P` key toggles the 3D phase-space view.  For integrable (quadrilateral)
+levels it shows the Liouville **torus**.  For the pseudo-integrable L it first
+classifies the level and then shows either a **torus** (when the caustic shadows
+the reflex corner) or a **double torus / pretzel** (when the reflex corner is
+accessible → genus 2).  See [`pseudo_integrable.md`](pseudo_integrable.md) for
+how this works.
 
 ## Running
 
@@ -43,5 +52,7 @@ Tests:
 cargo test
 ```
 
-See [`architecture.md`](architecture.md) for the module layout and
-[`known_issues.md`](known_issues.md) for open bugs and follow-up work.
+See [`architecture.md`](architecture.md) for the module layout,
+[`pseudo_integrable.md`](pseudo_integrable.md) for the pseudo-integrable
+renderers, and [`known_issues.md`](known_issues.md) for open bugs and follow-up
+work.

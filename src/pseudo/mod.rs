@@ -9,6 +9,10 @@
 //! - [`ulength`] — the `u(λ) = ∫ dλ/√P` quadrature table.
 //! - [`classify`] — level classification (forbidden / torus / genus-≥2).
 //! - [`map`] — per-sample mapping into flat coordinates.
+//! - [`render`] — 3D embeddings (torus angles, cross, double-torus pretzel).
+//! - [`view`] — flat-chart sampling and drawing for the 3D view.
+//!
+//! See `docs/pseudo_integrable.md` for the end-to-end pipeline.
 
 pub mod classify;
 pub mod map;
