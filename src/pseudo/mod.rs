@@ -22,6 +22,12 @@ pub mod view;
 
 pub use classify::{classify_level, AccessibleRegion, Level};
 pub use map::{reflex_corners_in_flat, to_flat, FlatError, FlatSample};
-pub use render::{cross_embed, pretzel_embed, sheets, torus_angles, CrossModuli};
+pub use render::{
+    cross_embed, donut_with_normal, pretzel_embed, pretzel_with_normal, sheets, torus_angles,
+    CrossModuli,
+};
 pub use ulength::{RootSide, ULength};
-pub use view::{draw_flat, sample_flat_trajectory, FlatPhasePoint};
+pub use view::{
+    draw_flat, draw_flat_boundary, draw_flat_highlights, sample_flat_boundary,
+    sample_flat_trajectory, FlatPhasePoint,
+};

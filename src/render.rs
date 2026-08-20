@@ -98,7 +98,7 @@ pub const BG: Color = color_u8!(15, 15, 35, 255);
 const BOUNDARY: Color = color_u8!(180, 220, 255, 200);
 const CORNER: Color = color_u8!(255, 200, 100, 200);
 
-fn hsl_to_rgb(hue: f32, s: f32, l: f32) -> Color {
+pub(crate) fn hsl_to_rgb(hue: f32, s: f32, l: f32) -> Color {
     let h = hue / 360.0;
     let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
     let x = c * (1.0 - ((h * 6.0) % 2.0 - 1.0).abs());

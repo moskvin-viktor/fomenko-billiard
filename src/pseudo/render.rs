@@ -27,6 +27,24 @@ pub fn torus_angles(u1: f32, u2: f32, w1: f32, w2: f32) -> (f32, f32) {
     (t1, t2)
 }
 
+/// Embed a torus level point (flat `(u1, u2)` on the rectangle `[0,w1]×[0,w2]`)
+/// onto the standard donut, returning the 3D position and the outward surface
+/// normal (for Lambert shading, matching the smooth confocal tori).
+pub fn donut_with_normal(u1: f32, u2: f32, w1: f32, w2: f32) -> (Vec3, Vec3) {
+    let (t1, t2) = torus_angles(u1, u2, w1, w2);
+    let (r_major, r_minor) = (1.6f32, 0.6f32);
+    let (s1, c1) = t1.sin_cos();
+    let (s2, c2) = t2.sin_cos();
+    let pos = vec3(
+        (r_major + r_minor * c1) * c2,
+        (r_major + r_minor * c1) * s2,
+        r_minor * s1,
+    );
+    // Normal of the parametrized torus at (θ1, θ2).
+    let n = vec3(c1 * c2, c1 * s2, s1);
+    (pos, n)
+}
+
 /// The flat extents of the cross 12-gon (doc §6): `([-A1, A1] × [-B2, B2]) ∪
 /// ([-A2, A2] × [-B1, B1])`.
 #[derive(Clone, Copy, Debug)]
@@ -79,6 +97,12 @@ pub fn cross_embed(u1: f32, u2: f32, s1: i8, s2: i8, _moduli: CrossModuli) -> Ve
 ///
 /// The result has genus 2: two disjoint handle cycles.
 pub fn pretzel_embed(u1: f32, u2: f32, s1: i8, s2: i8, moduli: CrossModuli) -> Vec3 {
+    pretzel_with_normal(u1, u2, s1, s2, moduli).0
+}
+
+/// [`pretzel_embed`] with the outward tube normal, for Lambert shading so the
+/// genus-2 surface carries the same depth/curvature cues as the torus levels.
+pub fn pretzel_with_normal(u1: f32, u2: f32, s1: i8, s2: i8, moduli: CrossModuli) -> (Vec3, Vec3) {
     let two_pi = std::f32::consts::TAU;
     let maj = moduli.major();
     // Longitudinal loop angle: two lobes per 2π.
@@ -112,9 +136,14 @@ pub fn pretzel_embed(u1: f32, u2: f32, s1: i8, s2: i8, moduli: CrossModuli) -> V
         n.normalize()
     };
 
+    // The tube radial direction (outward surface normal) before the σ₁ mirror.
+    let radial = (n * cos_t + b * sin_t).normalize();
     let pos = center + n * (r * cos_t) + b * (r * sin_t);
     let side = if s1 > 0 { 1.0 } else { -1.0 };
-    vec3(side * pos.x, pos.y, pos.z)
+    (
+        vec3(side * pos.x, pos.y, pos.z),
+        vec3(side * radial.x, radial.y, radial.z),
+    )
 }
 
 /// The four momentum sheets, in a canonical order.

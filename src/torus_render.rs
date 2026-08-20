@@ -9,7 +9,9 @@
 //! The camera is a separate concern (Euler angles in `OrbitCamera3`); here we
 //! only decide *when* to re-rasterize and do the cheap blit.
 
-use crate::phase3d::{draw_phase_points, draw_phase_trajectories, OrbitCamera3, PhasePoint};
+use crate::phase3d::{
+    draw_phase_points_scaled, draw_phase_trajectories_scaled, OrbitCamera3, PhasePoint,
+};
 use macroquad::prelude::*;
 
 /// A cheap fingerprint of the camera state, used to detect when the cached
@@ -18,7 +20,45 @@ pub fn camera_moved(a: (f32, f32, f32), b: (f32, f32, f32), eps: f32) -> bool {
     (a.0 - b.0).abs() > eps || (a.1 - b.1).abs() > eps || (a.2 - b.2).abs() > eps
 }
 
-/// Cached offscreen render of the torus point cloud.
+/// Radial extent assigned to the torus renderer, derived from the size of the
+/// billiard domain.  Each torus lobe is centred on the origin and scaled to
+/// fill (roughly) the projected domain, so when the domain grows or shrinks the
+/// torus tracks it instead of staying a fixed absolute size (as it did before).
+pub struct DomainScale {
+    pub r_major: f32,
+    pub r_minor: f32,
+}
+
+impl DomainScale {
+    /// From a domain that filled the 2D view with size `extent` (half-max
+    /// coordinate magnitude), produce torus radii that fill a similar fraction
+    /// of the 3D view.  The reference values match the torus drawn before this
+    /// feature when `extent ≈ 2.3`, so existing renders change little.
+    pub fn of_extent(extent: f32) -> Self {
+        Self {
+            r_major: 0.7 * extent,
+            r_minor: 0.26 * extent,
+        }
+    }
+}
+
+/// Everything the renderer needs apart from its own cached state: the camera,
+/// window size and the domain-derived torus scale.  Bundled so the draw call
+/// stays small.
+pub struct DrawContext<'a> {
+    pub cam: &'a OrbitCamera3,
+    pub win_w: f32,
+    pub win_h: f32,
+    pub scale: &'a DomainScale,
+}
+
+impl Default for DomainScale {
+    fn default() -> Self {
+        Self::of_extent(2.3)
+    }
+}
+
+/// A scratch offscreen state structure for the torus point cloud.
 pub struct TorusRender {
     /// Offscreen target we rasterize the torus into.
     target: Option<RenderTarget>,
@@ -72,8 +112,28 @@ impl TorusRender {
         win_w: f32,
         win_h: f32,
     ) {
-        let size = (win_w as u32, win_h as u32);
-        let cam_key = cam.state_key();
+        let no_boundary = Vec::<(PhasePoint, bool)>::new();
+        let ctx = DrawContext {
+            cam,
+            win_w,
+            win_h,
+            scale: &DomainScale::default(),
+        };
+        self.draw_scaled(trajectories, highlights, &no_boundary, &ctx);
+    }
+
+    /// Draw the torus with a domain-derived scale (so it grows/shrinks with the
+    /// billiard), and overlay the π⁻¹(boundary) curves on the surface.  See
+    /// [`DomainScale`].
+    pub fn draw_scaled(
+        &mut self,
+        trajectories: &[Vec<PhasePoint>],
+        highlights: &[Vec<PhasePoint>],
+        boundary: &[(PhasePoint, bool)],
+        ctx: &DrawContext,
+    ) {
+        let size = (ctx.win_w as u32, ctx.win_h as u32);
+        let cam_key = ctx.cam.state_key();
         let geom_key = Self::geometry_key(trajectories);
 
         // Recreate the target if the window resized.
@@ -93,7 +153,7 @@ impl TorusRender {
         let needs_raster = cam_changed || geom_key != self.geom_key;
 
         if needs_raster {
-            self.rasterize(trajectories, cam, win_w, win_h);
+            self.rasterize(trajectories, boundary, ctx);
             self.camera_key = cam_key;
             self.geom_key = geom_key;
         }
@@ -106,7 +166,7 @@ impl TorusRender {
                 0.0,
                 WHITE,
                 DrawTextureParams {
-                    dest_size: Some(vec2(win_w, win_h)),
+                    dest_size: Some(vec2(ctx.win_w, ctx.win_h)),
                     flip_y: true, // render targets are Y-flipped in macroquad
                     ..Default::default()
                 },
@@ -115,16 +175,17 @@ impl TorusRender {
 
         // Bold red short trajectories on the torus surface, one per torus,
         // drawn on top of the cached texture each frame (cheap).
-        crate::phase3d::draw_torus_highlights(highlights, cam, win_w, win_h);
+        crate::phase3d::draw_torus_highlights_scaled(
+            highlights, ctx.cam, ctx.win_w, ctx.win_h, ctx.scale,
+        );
     }
 
     /// Rasterize the torus into the offscreen target.
     fn rasterize(
         &self,
         trajectories: &[Vec<PhasePoint>],
-        cam: &OrbitCamera3,
-        win_w: f32,
-        win_h: f32,
+        boundary: &[(PhasePoint, bool)],
+        ctx: &DrawContext,
     ) {
         let target = self.target.as_ref().expect("render target exists");
         let size = self.size;
@@ -135,7 +196,7 @@ impl TorusRender {
         // `Camera2D` on a render target uses the identity matrix (NDC), so
         // pixel coordinates would land off-target.  Instead map pixel space
         // onto the target: NDC_x = 2·x/tw − 1, NDC_y = −2·y/th + 1, which the
-        // Camera2D zoom+offset reproduce exactly (the − on y restores y-down;
+        // `Camera2D` zoom+offset reproduce exactly (the − on y restores y-down;
         // blitting with `flip_y` presents it upright).
         let cam2d = Camera2D {
             render_target: Some(target.clone()),
@@ -149,8 +210,9 @@ impl TorusRender {
 
         // The torus is drawn in screen space (projected by the orbit camera),
         // so we reuse the existing point/line drawing into the target.
-        draw_phase_points(trajectories, cam, win_w, win_h);
-        draw_phase_trajectories(trajectories, cam, win_w, win_h);
+        draw_phase_points_scaled(trajectories, ctx.cam, ctx.win_w, ctx.win_h, ctx.scale);
+        draw_phase_trajectories_scaled(trajectories, ctx.cam, ctx.win_w, ctx.win_h, ctx.scale);
+        crate::phase3d::draw_boundary_preimage(boundary, ctx.scale, ctx.cam, ctx.win_w, ctx.win_h);
 
         set_default_camera();
     }

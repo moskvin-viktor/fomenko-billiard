@@ -18,8 +18,8 @@ const KEY_STEP: f32 = 0.05;
 // Λ swept per second during animation.
 const ANIM_SPEED: f32 = 0.4;
 
-// ----------------------------------------------------------------
 // Rebuildable derived-view state
+// ----------------------------------------------------------------
 // ----------------------------------------------------------------
 
 /// Everything that must be recomputed together whenever the domain, the second
@@ -36,9 +36,18 @@ struct ViewState {
     phase_trajectories: Vec<Vec<phase3d::PhasePoint>>,
     /// Short (few-bounce) phase-space highlights drawn red on the torus.
     torus_highlights: Vec<Vec<phase3d::PhasePoint>>,
+    /// π⁻¹(boundary): phase-space points on the domain walls / caustic,
+    /// drawn in distinct colours on the torus so the billiard's own boundary is
+    /// visible wrapped around the abstract torus.
+    boundary_preimage: Vec<(phase3d::PhasePoint, bool)>,
     /// Flat-chart trajectories for a pseudo-integrable table (the L).  When
     /// non-empty, the 3D view renders these instead of the torus path.
     flat_trajectories: Vec<Vec<crate::pseudo::FlatPhasePoint>>,
+    /// Short (few-bounce) example trajectories on the flat surface, drawn red
+    /// (like the smooth case's `torus_highlights`).
+    flat_highlights: Vec<Vec<crate::pseudo::FlatPhasePoint>>,
+    /// π⁻¹(boundary) on the flat map: walls + caustic, drawn cyan/orange.
+    flat_boundary: Vec<(crate::pseudo::FlatPhasePoint, bool)>,
     /// The classified level of the current flat view (torus vs genus-2).
     flat_level: Option<crate::pseudo::Level>,
 }
@@ -51,7 +60,10 @@ impl ViewState {
             trajectories: Vec::new(),
             phase_trajectories: Vec::new(),
             torus_highlights: Vec::new(),
+            boundary_preimage: Vec::new(),
             flat_trajectories: Vec::new(),
+            flat_highlights: Vec::new(),
+            flat_boundary: Vec::new(),
             flat_level: None,
         }
     }
@@ -95,10 +107,23 @@ impl ViewState {
                                 crate::pseudo::sample_flat_trajectory(domain, p, v, 200, 8, &level)
                             })
                             .collect();
+                        // Example trajectories: short (few-bounce) flat traces
+                        // from the *same* 2D start points, drawn red on top.
+                        self.flat_highlights = starts
+                            .iter()
+                            .map(|&(p, v)| {
+                                crate::pseudo::sample_flat_trajectory(domain, p, v, 4, 8, &level)
+                            })
+                            .filter(|t| !t.is_empty())
+                            .collect();
+                        // π⁻¹(boundary): walls + caustic on the flat map.
+                        self.flat_boundary =
+                            crate::pseudo::sample_flat_boundary(domain, second_int, &level);
                         self.flat_level = Some(level);
                         // Clear the torus path for this view.
                         self.phase_trajectories.clear();
                         self.torus_highlights.clear();
+                        self.boundary_preimage.clear();
                         return;
                     }
                     _ => {}
@@ -129,10 +154,17 @@ impl ViewState {
                 .map(|&(p, v)| phase3d::sample_trajectory_phase_dense(domain, p, v, 4, 8, bounds))
                 .filter(|t| !t.is_empty())
                 .collect();
+
+            // π⁻¹(boundary): the walls + caustic curves of the billiard,
+            // mapped onto the torus in distinct colours.
+            self.boundary_preimage = phase3d::boundary_preimage_points(domain, second_int, bounds);
         } else {
             self.phase_trajectories.clear();
             self.torus_highlights.clear();
+            self.boundary_preimage.clear();
             self.flat_trajectories.clear();
+            self.flat_highlights.clear();
+            self.flat_boundary.clear();
             self.flat_level = None;
         }
     }
@@ -327,16 +359,45 @@ impl App {
             // the cached torus render.
             if let Some(level) = &self.view.flat_level {
                 crate::pseudo::draw_flat(&self.view.flat_trajectories, level, &self.cam3d, w, h);
-            } else {
-                // Dense points fill the 2D Liouville torus surface.  Rasterized
-                // into an offscreen target and blitted; re-rasterized only when
-                // the camera or geometry changes.
-                self.torus_render.draw(
-                    &self.view.phase_trajectories,
-                    &self.view.torus_highlights,
+                // Example trajectories (red) and boundary preimage (cyan/orange)
+                // on the flat surface, matching the smooth torus view.
+                crate::pseudo::draw_flat_highlights(
+                    &self.view.flat_highlights,
+                    level,
                     &self.cam3d,
                     w,
                     h,
+                );
+                crate::pseudo::draw_flat_boundary(
+                    &self.view.flat_boundary,
+                    level,
+                    &self.cam3d,
+                    w,
+                    h,
+                );
+            } else {
+                // Dense points fill the 2D Liouville torus surface.  Rasterized
+                // into an offscreen target and blitted; re-rasterized only when
+                // the camera or geometry changes.  The torus size is driven by
+                // how much of the domain the trajectory is allowed to reach
+                // at the current Λ (see `accessible_region_scale`), so as Λ is
+                // animated the torus grows/shrinks with the accessible region.
+                // The billiard's boundary (walls + caustic) is drawn on the
+                // surface in distinct colours.
+                let scale = crate::torus_render::DomainScale::of_extent(
+                    phase3d::accessible_region_scale(&preset.domain, self.second_int),
+                );
+                let ctx = crate::torus_render::DrawContext {
+                    cam: &self.cam3d,
+                    win_w: w,
+                    win_h: h,
+                    scale: &scale,
+                };
+                self.torus_render.draw_scaled(
+                    &self.view.phase_trajectories,
+                    &self.view.torus_highlights,
+                    &self.view.boundary_preimage,
+                    &ctx,
                 );
             }
 

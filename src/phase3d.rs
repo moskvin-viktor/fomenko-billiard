@@ -290,6 +290,48 @@ fn f_lam(th: f32, pos: Vec2, lam: f32, a: f32, b: f32) -> f32 {
     vx * vx / a + vy * vy / b - (x * vy - y * vx).powi(2) / (a * b) - lam
 }
 
+/// A length scale for how much of the billiard the trajectory is allowed to
+/// reach at the current second integral `lam`.
+///
+/// The accessible region is the part of the domain outside the caustic
+/// `Q_Λ = 0` (the trajectory never crosses the caustic).  As Λ changes, this
+/// region swells or shrinks: near the boundary the caustic hugs the wall and
+/// only a thin annulus is reachable (small torus); when the caustic collapses
+/// inward the trajectory covers nearly the whole domain (big torus).  We
+/// measure it by the mean distance of the caustic's in-domain points from the
+/// domain centre, normalised so the torus radius tracks it.
+pub fn accessible_region_scale(domain: &crate::domain::Domain, lam: f32) -> f32 {
+    let cf = crate::torus::ConfocalParams::standard();
+    // Degenerate caustics (Λ = b or Λ = a) collapse to a segment; fall back to
+    // the domain extent so the torus stays a reasonable size.
+    if (lam - cf.b).abs() < 0.03 || (lam - cf.a).abs() < 0.03 {
+        return crate::render::CachedDomain::new(domain).domain_extent;
+    }
+
+    let quad = crate::quadratic::confocal(cf, lam);
+    let pts = quad.sample_boundary(400);
+    // The caustic's in-domain points: the accessible region is the annulus
+    // between the caustic and the boundary, so the caustic's own extent tells
+    // us how far the trajectory can reach inward.
+    let mut sum = 0.0f32;
+    let mut n = 0u32;
+    for p in pts {
+        if domain.contains(p) {
+            sum += p.length();
+            n += 1;
+        }
+    }
+    if n == 0 {
+        return crate::render::CachedDomain::new(domain).domain_extent;
+    }
+    let mean_r = sum / n as f32;
+    // Normalise to the domain extent so the torus fills a comparable fraction
+    // of the view; the caustic sits between the centre and the wall, so this
+    // ranges from ~0 (tiny accessible region) to ~1 (whole domain).
+    let extent = crate::render::CachedDomain::new(domain).domain_extent;
+    (mean_r / extent).clamp(0.2, 1.0) * extent
+}
+
 // ----------------------------------------------------------------
 // 3D drawing helpers
 // ----------------------------------------------------------------
@@ -353,8 +395,26 @@ pub fn draw_torus_highlights(
     win_w: f32,
     win_h: f32,
 ) {
-    let r_major = 1.6;
-    let r_minor = 0.6;
+    draw_torus_highlights_scaled(
+        trajectories,
+        cam,
+        win_w,
+        win_h,
+        &crate::torus_render::DomainScale::default(),
+    );
+}
+
+/// [`draw_torus_highlights`] with an explicit torus scale (so the highlight
+/// tracks the domain-derived torus size).
+pub fn draw_torus_highlights_scaled(
+    trajectories: &[Vec<PhasePoint>],
+    cam: &OrbitCamera3,
+    win_w: f32,
+    win_h: f32,
+    scale: &crate::torus_render::DomainScale,
+) {
+    let r_major = scale.r_major;
+    let r_minor = scale.r_minor;
 
     // One representative per distinct torus index (trajectories never cross
     // between tori — each `torus_index` is a disconnected accessible region).
@@ -399,15 +459,161 @@ pub fn draw_torus_highlights(
     }
 }
 
-/// Draw a set of phase space trajectories as 3D curves on the torus.
+/// Draw the torus preimage π⁻¹ of the billiard boundary: every phase-space
+/// point whose velocity is tangent to the caustic `Q_Λ = 0` and whose position
+/// lies on the billiard boundary (the walls) or on the caustic itself (the
+/// turning-point curves).
+///
+/// These are the curves on the torus that the *domain's* bounding curves map
+/// to under the projection π, shown in a distinct color from the interior
+/// point cloud so the size/shape of the billiard boundary is visible on the
+/// abstract torus as it grows/shrinks with the domain.
+pub fn boundary_preimage_points(
+    domain: &crate::domain::Domain,
+    lam: f32,
+    bounds: (f32, Option<f32>),
+) -> Vec<(PhasePoint, bool)> {
+    let cf = crate::torus::ConfocalParams::standard();
+    let mut cache = crate::torus::TorusCache::default();
+    let mut out = Vec::new();
+
+    // Map one physical point (position + one phase-space velocity, which is
+    // always a caustic tangent) onto the torus.
+    let mut map_velocity = |p: Vec2, vel: Vec2, is_caustic: bool| {
+        let sample = crate::torus::PhaseSample::new(p.x, p.y, vel.x, vel.y);
+        let mut params = crate::torus::TorusParams {
+            confocal: &cf,
+            lam_wall: bounds.0,
+            beta: bounds.1,
+            sep_eps: 1e-9,
+            cache: &mut cache,
+        };
+        let (th1, th2, tidx) = crate::torus::to_torus(&sample, &mut params);
+        let tidx = if tidx == u32::MAX { 0 } else { tidx };
+        out.push((
+            PhasePoint {
+                x: p.x,
+                y: p.y,
+                theta: vel.y.atan2(vel.x) / std::f32::consts::PI,
+                theta1: th1,
+                theta2: th2,
+                torus_index: tidx,
+            },
+            is_caustic,
+        ));
+    };
+
+    // Walls: the physical boundary of the billiard.  The two unit tangents
+    // through a wall point are the two phase-space sheets that hit that wall.
+    for p in domain.sample_boundary(24) {
+        for vel in velocities_for_lambda(p, lam, cf.a, cf.b) {
+            map_velocity(p, vel, false);
+        }
+    }
+
+    // Caustic arcs Q_Λ = 0 inside the domain (the turning-point curves).  At
+    // a caustic point the velocity is exactly tangent to the caustic, given
+    // analytically by rotating the gradient (the two ± signs are the two
+    // phase-space sheets meeting at the turning point).
+    if !((lam - cf.b).abs() < 0.03 || (lam - cf.a).abs() < 0.03) {
+        let quad = crate::quadratic::confocal(cf, lam);
+        for p in quad.sample_boundary(60) {
+            if domain.contains(p) {
+                let g = quad.grad(p);
+                let tan = vec2(-g.y, g.x).normalize();
+                map_velocity(p, tan, true);
+                map_velocity(p, -tan, true);
+            }
+        }
+    }
+
+    out
+}
+
+/// Draw the boundary preimage points in distinct colours (cyan for the domain
+/// wall, orange for the caustic), on top of the dimmed interior cloud.
+pub fn draw_boundary_preimage(
+    preimages: &[(PhasePoint, bool)],
+    scale: &crate::torus_render::DomainScale,
+    cam: &OrbitCamera3,
+    win_w: f32,
+    win_h: f32,
+) {
+    if preimages.is_empty() {
+        return;
+    }
+    let r_major = scale.r_major;
+    let r_minor = scale.r_minor;
+
+    // Sort by camera depth so nearer boundary points draw on top.
+    let mut pts: Vec<(Vec3, u32, bool)> = preimages
+        .iter()
+        .map(|(pt, is_ca)| {
+            let (p, _n) = torus_embed(pt, r_major, r_minor, pt.torus_index);
+            let s = cam.project(p, win_w, win_h);
+            (s, pt.torus_index, *is_ca)
+        })
+        .collect();
+    pts.sort_by(|a, b| {
+        a.0.z
+            .partial_cmp(&b.0.z)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    for (s, tidx, is_ca) in &pts {
+        if s.z < -0.1 {
+            continue;
+        }
+        // Keep boundary dots bright and opaque so they stand out against the
+        // dimmed interior cloud.
+        let depth = (-s.z).clamp(0.5, 5.0);
+        let alpha = (0.65 + 0.35 * (1.0 - (depth - 0.5) / 4.5)).clamp(0.4, 1.0);
+        // Separate the two torus lobes by alternating brightness.
+        let dim = if *tidx % 2 == 0 { 1.0 } else { 0.6 };
+        let (r, g, b) = if *is_ca {
+            (255, 130, 20)
+        } else {
+            (70, 210, 255)
+        };
+        draw_circle(
+            s.x,
+            s.y,
+            3.0,
+            color_u8!(
+                (r as f32 * dim) as u8,
+                (g as f32 * dim) as u8,
+                (b as f32 * dim) as u8,
+                (alpha * 255.0) as u8
+            ),
+        );
+    }
+}
+
 pub fn draw_phase_trajectories(
     trajectories: &[Vec<PhasePoint>],
     cam: &OrbitCamera3,
     win_w: f32,
     win_h: f32,
 ) {
-    let r_major = 1.6;
-    let r_minor = 0.6;
+    draw_phase_trajectories_scaled(
+        trajectories,
+        cam,
+        win_w,
+        win_h,
+        &crate::torus_render::DomainScale::default(),
+    );
+}
+
+/// [`draw_phase_trajectories`] with an explicit torus scale.
+pub fn draw_phase_trajectories_scaled(
+    trajectories: &[Vec<PhasePoint>],
+    cam: &OrbitCamera3,
+    win_w: f32,
+    win_h: f32,
+    scale: &crate::torus_render::DomainScale,
+) {
+    let r_major = scale.r_major;
+    let r_minor = scale.r_minor;
 
     for traj in trajectories {
         if traj.len() < 2 {
@@ -462,9 +668,26 @@ pub fn draw_phase_points(
     win_w: f32,
     win_h: f32,
 ) {
-    // Torus radii — fixed size so it fills the view.
-    let r_major = 1.6;
-    let r_minor = 0.6;
+    draw_phase_points_scaled(
+        trajectories,
+        cam,
+        win_w,
+        win_h,
+        &crate::torus_render::DomainScale::default(),
+    );
+}
+
+/// [`draw_phase_points`] with an explicit torus scale.
+pub fn draw_phase_points_scaled(
+    trajectories: &[Vec<PhasePoint>],
+    cam: &OrbitCamera3,
+    win_w: f32,
+    win_h: f32,
+    scale: &crate::torus_render::DomainScale,
+) {
+    // Torus radii — scaled to fill the view along with the domain.
+    let r_major = scale.r_major;
+    let r_minor = scale.r_minor;
 
     // Bound the per-raster point count so orbiting doesn't freeze the app.  A
     // large cloud is decimated with a uniform stride; the budget keeps the
@@ -487,19 +710,21 @@ pub fn draw_phase_points(
 
             // Lambertian shading: brightness ∝ max(0, n · light).  This makes
             // the 3D curvature of the torus visible instead of a flat color.
+            // The interior cloud is deliberately kept dim so the boundary
+            // preimage (walls/caustic) drawn on top stays clearly visible.
             let light = vec3(0.4, 0.6, 0.7).normalize();
             let lambert = (normal.dot(light)).max(0.0);
-            let shade = 0.25 + 0.75 * lambert;
+            let shade = 0.16 + 0.38 * lambert;
 
-            // Depth-based alpha and size
+            // Depth-based alpha and size (interior kept semi-transparent).
             let depth = (-s.z).clamp(0.5, 5.0);
-            let alpha = (0.3 + 0.6 * (1.0 - (depth - 0.5) / 4.5)).min(1.0);
-            let radius = 1.8 + 0.8 * (1.0 - (depth - 0.5) / 4.5);
+            let alpha = (0.22 + 0.35 * (1.0 - (depth - 0.5) / 4.5)).clamp(0.05, 0.6);
+            let radius = 1.4 + 0.6 * (1.0 - (depth - 0.5) / 4.5);
 
-            // Warm base color, scaled by the lighting.
+            // Warm base color, scaled by the lighting (dimmer than before).
             let r = (255.0 * shade) as u8;
-            let g = (200.0 * shade) as u8;
-            let b = (110.0 * shade) as u8;
+            let g = (170.0 * shade) as u8;
+            let b = (90.0 * shade) as u8;
             draw_circle(s.x, s.y, radius, color_u8!(r, g, b, (alpha * 255.0) as u8));
         }
     }
