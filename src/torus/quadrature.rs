@@ -42,6 +42,24 @@ pub struct Libration {
 impl Libration {
     pub fn new(lo: f32, hi: f32, roots: [f32; 3], knots: usize) -> Self {
         let lo_is_root = roots.iter().any(|&r| (r - lo).abs() < 1e-6);
+
+        // A degenerate span: the interval collapses to a point (lo == hi), or
+        // two roots coincide near the separatrix (e.g. lo == lc sitting within
+        // 1e-6 of the focal root b), leaving no distinct third root to
+        // integrate against.  Return a zero-length libration instead of
+        // panicking — callers are expected to skip such a level via the
+        // separatrix check in `to_torus`.
+        if (hi - lo).abs() < 1e-9 || !has_third_root(roots, lo, hi) {
+            return Self {
+                lo,
+                hi,
+                both_roots: false,
+                xs: vec![0.0],
+                gs: vec![0.0],
+                w_full: 0.0,
+            };
+        }
+
         if lo_is_root {
             // Both ends are roots: λ = lo + (hi−lo) sin²φ, φ ∈ [0, π/2].
             // P(λ) = (λ−lo)(hi−λ)·Q(λ), dλ/dφ = 2(hi−lo) sinφ cosφ, so
@@ -148,6 +166,13 @@ impl Libration {
     }
 }
 
+/// True if there is a third root distinct from both `lo` and `hi`.
+fn has_third_root(roots: [f32; 3], lo: f32, hi: f32) -> bool {
+    roots
+        .iter()
+        .any(|&r| (r - lo).abs() > 1e-6 && (r - hi).abs() > 1e-6)
+}
+
 /// Index of the root closest to `target` (ties → earliest).
 fn argmin_abs(roots: [f32; 3], target: f32) -> usize {
     roots
@@ -183,4 +208,49 @@ fn interp(x: f32, xs: &[f32], ys: &[f32]) -> f32 {
     let (xa, xb) = (xs[i - 1], xs[i]);
     let t = ((x - xa) / (xb - xa).max(1e-30)).clamp(0.0, 1.0);
     ys[i - 1] + t * (ys[i] - ys[i - 1])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A degenerate span (lo == hi, both coinciding with a root, e.g. the
+    /// caustic sitting exactly on a wall) must not panic and must yield a
+    /// zero-length libration.
+    #[test]
+    fn degenerate_span_does_not_panic() {
+        let lo = 1.0;
+        let hi = 1.0;
+        let roots = [4.0, 1.0, 1.0]; // lo == hi == a root (b or lc)
+        let lib = Libration::new(lo, hi, roots, 512);
+        assert_eq!(lib.w_full, 0.0);
+        assert!((lib.w(lo) - 0.0).abs() < 1e-9);
+    }
+
+    /// A normal both-roots span still integrates to a positive half-period.
+    #[test]
+    fn both_roots_span_is_positive() {
+        let lo = 2.0;
+        let hi = 4.0;
+        let roots = [6.0, 1.0, 2.0]; // lo is a root (lc=2), hi=4 a wall, third=6
+        let lib = Libration::new(lo, hi, roots, 512);
+        assert!(lib.w_full > 0.0);
+        assert!(lib.w_full.is_finite());
+    }
+
+    /// The reported panic: hyperbolic path with lo = lc sitting within 1e-6 of
+    /// the focal root b, so the third candidate root (b) coincides with lo and
+    /// no distinct third root exists.  Must not panic.
+    #[test]
+    fn hyperbolic_lo_near_focal_root_does_not_panic() {
+        // a = 4, b = 1, lc = 1 + 5e-7 (within 1e-6 of b).  roots = [a, b, lc].
+        let a = 4.0f32;
+        let b = 1.0f32;
+        let lc = b + 5e-7;
+        let lo = lc;
+        let hi = a;
+        let roots = [a, b, lc];
+        let lib = Libration::new(lo, hi, roots, 512);
+        assert!(lib.w_full.is_finite(), "w_full must be finite, not panic");
+    }
 }

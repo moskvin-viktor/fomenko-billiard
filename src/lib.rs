@@ -1,6 +1,7 @@
 pub mod app;
 pub mod confocal;
 pub mod domain;
+pub mod molecule;
 pub mod phase3d;
 pub mod presets;
 pub mod pseudo;
