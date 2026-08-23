@@ -21,6 +21,8 @@ pub struct ConfocalStructure {
     pub lambda_hyp: Option<f32>,
     /// Whether the boundary is exactly a confocal quadrilateral.
     pub is_quadrilateral: bool,
+    /// Whether the domain is a full ellipse (no hyperbola walls).
+    pub is_full_ellipse: bool,
 }
 
 impl ConfocalStructure {
@@ -57,6 +59,7 @@ impl ConfocalStructure {
             lambda_ell: ell.unwrap_or(0.0),
             lambda_hyp: hyp,
             is_quadrilateral: quadrics.len() == 4 && ell.is_some() && hyp.is_some(),
+            is_full_ellipse: hyp.is_none() && ell.is_some(),
         })
     }
 
@@ -87,14 +90,12 @@ impl ConfocalStructure {
         }
     }
 
-    /// Membership test for a confocal quadrilateral.  A point is inside when it
-    /// lies within the boundary ellipse and between the two hyperbola sheets.
-    /// `slack` shrinks the region slightly inward.  Only valid for exact
-    /// quadrilaterals; for non-quadrilaterals use [`domain::Domain::contains`].
+    /// Membership test for a confocal quadrilateral or full ellipse.  A point
+    /// is inside when it lies within the boundary ellipse (and, for a
+    /// quadrilateral, between the two hyperbola sheets).  `slack` shrinks the
+    /// region slightly inward.  Only valid for exact quadrilaterals and full
+    /// ellipses; for other non-quadrilaterals use [`domain::Domain::contains`].
     pub fn contains(&self, p: Vec2, slack: f32) -> bool {
-        let Some(lambda_hyp) = self.lambda_hyp else {
-            return false;
-        };
         let a = self.cf.a;
         let b = self.cf.b;
         let lambda_ell = self.lambda_ell;
@@ -104,6 +105,10 @@ impl ConfocalStructure {
         if e_val >= -slack {
             return false;
         }
+        // Full ellipse: no hyperbola walls, so the ellipse bound is enough.
+        let Some(lambda_hyp) = self.lambda_hyp else {
+            return true;
+        };
         let h_val = (b - lambda_hyp) * p.x * p.x + (a - lambda_hyp) * p.y * p.y
             - (a - lambda_hyp) * (b - lambda_hyp);
         h_val > slack
@@ -216,7 +221,7 @@ pub fn caustic_starts(
     for &p in &pts {
         let in_domain = if let Some(t) = &table {
             t.contains(p.x, p.y, &structure.cf)
-        } else if structure.is_quadrilateral {
+        } else if structure.is_quadrilateral || structure.is_full_ellipse {
             structure.contains(p, detect_slack)
         } else {
             dom.contains(p)
@@ -228,9 +233,13 @@ pub fn caustic_starts(
         return vec![];
     }
 
+    // Find a boundary transition (inside → outside) to start a run.  When the
+    // caustic is fully contained (a closed curve entirely inside the domain,
+    // e.g. a small elliptic caustic in the full ellipse), there is no such
+    // transition; fall back to any inside point so the run still starts.
     let start = (0..n)
         .find(|&i| inside[i] && !inside[(i + n - 1) % n])
-        .unwrap();
+        .unwrap_or_else(|| (0..n).find(|&i| inside[i]).unwrap());
 
     let mut starts = Vec::new();
     let mut i = start;
@@ -287,6 +296,133 @@ pub fn caustic_starts(
     }
 }
 
+/// Pick start points on a **critical** caustic level, where the caustic
+/// degenerates to a border piece and the ball slides exactly along it.
+///
+/// At a critical value the confocal quadric `Q_Λ = 0` is degenerate, or the
+/// caustic collapses onto a wall:
+///
+/// * the ellipse wall `Λ = λ_ell` — the caustic hugs the outer ellipse wall;
+/// * `Λ = b` — the focal segment `[−c, +c]` on the x-axis (degenerate ellipse)
+///   together with the two horizontal rays (degenerate hyperbola).  Inside the
+///   domain only the segment survives.
+/// * `Λ = a` — the vertical segment `x = 0, |y| ≤ √b` (degenerate hyperbola).
+/// * a hyperbola wall `Λ = λ_hyp` — the wall arc itself.
+///
+/// We sample points on the surviving piece/arc and give each the tangent
+/// velocity, so the trajectory is the ball sliding along the border.  Returns
+/// `None` when `lam` is not one of these **degenerate** critical values
+/// (callers should use [`caustic_starts`] instead).
+///
+/// `n` is the number of samples to spread along the piece.
+pub fn critical_caustic_starts(
+    structure: &ConfocalStructure,
+    dom: &domain::Domain,
+    lam: f32,
+    n: usize,
+) -> Option<Vec<(Vec2, Vec2)>> {
+    let cf = structure.cf;
+    let b = cf.b;
+    let a = cf.a;
+
+    // Sample the domain's boundary arc lying on the quadric `lambda` (a wall),
+    // and give each point its tangent velocity so the ball slides along the wall.
+    let wall_slide = |lambda: f32| -> Option<Vec<(Vec2, Vec2)>> {
+        let quad = quadratic::confocal(cf, lambda);
+        let mut pts = Vec::new();
+        for seg in &dom.segments {
+            if let domain::Segment::Quad { curve, a, b } = seg {
+                if (curve.lambda - lambda).abs() < 1e-4 {
+                    let arc = crate::domain::sample_wall_arc(curve, *a, *b, n.max(16));
+                    // Drop the arc endpoints (boundary corners), where the
+                    // analytic membership is fragile and the slide degenerates.
+                    let inner: Vec<Vec2> = arc
+                        .iter()
+                        .enumerate()
+                        .filter(|&(i, _)| i != 0 && i != arc.len() - 1)
+                        .map(|(_, p)| *p)
+                        .collect();
+                    pts.extend(inner);
+                }
+            }
+        }
+        let tangent = |p: Vec2| {
+            let g = quad.grad(p);
+            vec2(-g.y, g.x).normalize()
+        };
+        Some(pts.into_iter().map(|p| (p, tangent(p))).collect())
+    };
+
+    let piece: Option<Vec<(Vec2, Vec2)>> = if (lam - b).abs() < 1e-4 {
+        // Focal segment on the x-axis, from −c to +c, clipped to the domain.
+        let c = (a - b).sqrt();
+        let mut pts = Vec::new();
+        let steps = n.max(2);
+        for i in 0..=steps {
+            let x = -c + 2.0 * c * i as f32 / steps as f32;
+            let p = vec2(x, 0.0);
+            if inside_critical(structure, dom, p) {
+                pts.push(p);
+            }
+        }
+        Some(pts.into_iter().map(|p| (p, vec2(1.0, 0.0))).collect())
+    } else if (lam - a).abs() < 1e-4 {
+        // Vertical segment x = 0, |y| ≤ √b.
+        let h = b.sqrt();
+        let mut pts = Vec::new();
+        let steps = n.max(2);
+        for i in 0..=steps {
+            let y = -h + 2.0 * h * i as f32 / steps as f32;
+            let p = vec2(0.0, y);
+            if inside_critical(structure, dom, p) {
+                pts.push(p);
+            }
+        }
+        Some(pts.into_iter().map(|p| (p, vec2(0.0, 1.0))).collect())
+    } else if (lam - structure.lambda_ell).abs() < 1e-4 {
+        wall_slide(structure.lambda_ell)
+    } else if let Some(h) = structure.lambda_hyp {
+        if (lam - h).abs() < 1e-4 {
+            wall_slide(h)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    let pts = piece?;
+    if pts.is_empty() {
+        return Some(Vec::new());
+    }
+    Some(pts)
+}
+
+/// Inside test for a critical-layer sample point.  The sample lies on the
+/// degenerate caustic; we require it to be genuinely inside the domain (no
+/// slack), so the ball can slide along the border.
+fn inside_critical(structure: &ConfocalStructure, dom: &domain::Domain, p: Vec2) -> bool {
+    if structure.is_quadrilateral || structure.is_full_ellipse {
+        structure.contains(p, 0.0)
+    } else {
+        dom.contains(p)
+    }
+}
+
+/// Whether a caustic level `lam` is reachable: it has at least one trajectory
+/// start point (either the degenerate critical path or the ordinary caustic
+/// sampler).  Used to keep navigation layers out of forbidden gaps.
+pub fn level_is_reachable(dom: &domain::Domain, _cf: &ConfocalParams, lam: f32) -> bool {
+    if let Some(structure) = ConfocalStructure::of_domain(dom) {
+        if critical_caustic_starts(&structure, dom, lam, 8).is_some() {
+            return true;
+        }
+        !caustic_starts(&structure, dom, lam, CausticSampling::Sparse, 0).is_empty()
+    } else {
+        false
+    }
+}
+
 /// Newton-project a point onto the quadric, then attach the caustic velocity.
 /// Returns `None` if the projection lands outside the domain.
 fn snap_velocity(
@@ -314,7 +450,7 @@ fn snap_velocity(
     // push a sample onto the boundary.
     let genuinely_inside = if let Some(t) = &crate::table::Table::from_domain(dom, &structure.cf) {
         t.contains(q.x, q.y, &structure.cf)
-    } else if structure.is_quadrilateral {
+    } else if structure.is_quadrilateral || structure.is_full_ellipse {
         structure.contains(q, 0.0)
     } else {
         dom.contains(q)

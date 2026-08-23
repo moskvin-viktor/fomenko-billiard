@@ -23,6 +23,7 @@ pub mod evolution;
 pub mod fiber;
 pub mod grid;
 pub mod reeb;
+pub mod special;
 
 pub use critical::{
     classify_transition, critical_values, topo_signature, Signature, Transition, TransitionKind,
@@ -35,6 +36,7 @@ pub use grid::{
     VertexType,
 };
 pub use reeb::{build_molecule, Molecule, MoleculeEdge, MoleculeVertex};
+pub use special::{all_layers, layer_label, special_layers};
 
 use crate::table::Table;
 

@@ -66,15 +66,18 @@ impl SecondIntegralRange {
     fn confocal_bounds(domain: &domain::Domain) -> (f32, f32, f32, f32) {
         let cf = ConfocalParams::standard();
         let (lambda_ell, lambda_hyp) = match crate::confocal::ConfocalStructure::of_domain(domain) {
-            Some(s) => (s.lambda_ell, s.lambda_hyp.unwrap_or(cf.b + 1.0)),
+            Some(s) => (s.lambda_ell, s.lambda_hyp),
             // No quadric arcs (polyline): no confocal constraint → full range.
-            None => (0.0, cf.b + 1.0),
+            None => (0.0, Some(cf.b + 1.0)),
         };
         let e = SLIDER_EPS;
+        // For a full ellipse (no hyperbola wall) the hyperbolic side starts just
+        // above the focal separatrix `b`, not at an arbitrary `b + 1`.
+        let hyp_start = lambda_hyp.unwrap_or(cf.b);
         (
             lambda_ell + e, // ell_min
             cf.b - e,       // ell_max
-            lambda_hyp + e, // hyp_min
+            hyp_start + e,  // hyp_min
             cf.a - e,       // hyp_max
         )
     }
@@ -152,7 +155,9 @@ impl LambdaRange {
         match crate::confocal::ConfocalStructure::of_domain(domain) {
             Some(s) => Self {
                 lambda_ell: s.lambda_ell,
-                lambda_hyp: s.lambda_hyp.unwrap_or(cf.b + 1.0),
+                // Full ellipse (no hyperbola wall): the hyperbolic side starts
+                // just above the focal separatrix `b`.
+                lambda_hyp: s.lambda_hyp.unwrap_or(cf.b),
             },
             None => Self {
                 lambda_ell: 0.0,

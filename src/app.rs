@@ -50,6 +50,9 @@ struct ViewState {
     flat_boundary: Vec<(crate::pseudo::FlatPhasePoint, bool)>,
     /// The classified level of the current flat view (torus vs genus-2).
     flat_level: Option<crate::pseudo::Level>,
+    /// At a critical caustic level, the collapsed 2D phase manifold (a thin
+    /// flat sheet) instead of a 3D torus.  None on regular levels.
+    critical_sheet: Option<phase3d::CriticalSheet>,
 }
 
 impl ViewState {
@@ -65,6 +68,7 @@ impl ViewState {
             flat_highlights: Vec::new(),
             flat_boundary: Vec::new(),
             flat_level: None,
+            critical_sheet: None,
         }
     }
 
@@ -80,20 +84,57 @@ impl ViewState {
         let preset = &configs[idx];
         let domain = &preset.domain;
 
-        // 2D billiard: one trajectory per start point on the caustic.
-        let starts =
-            crate::get_start_points(second_int, domain, preset.is_confocal, preset.start_center);
-        self.start_points = starts.clone();
-        self.trajectories = starts
+        // 2D billiard: one trajectory per start point on the caustic.  On a
+        // degenerate critical layer the caustic collapses to a border piece and
+        // the ball slides along it; use the dedicated critical sampler so the
+        // 2D view still has start points (the phase sheet draws them).
+        let start_points = if preset.is_confocal {
+            if let Some(structure) = crate::confocal::ConfocalStructure::of_domain(domain) {
+                if let Some(crit) =
+                    crate::confocal::critical_caustic_starts(&structure, domain, second_int, 64)
+                {
+                    crit
+                } else {
+                    crate::get_start_points(
+                        second_int,
+                        domain,
+                        preset.is_confocal,
+                        preset.start_center,
+                    )
+                }
+            } else {
+                crate::get_start_points(second_int, domain, preset.is_confocal, preset.start_center)
+            }
+        } else {
+            crate::get_start_points(second_int, domain, preset.is_confocal, preset.start_center)
+        };
+        self.start_points = start_points.clone();
+        self.trajectories = start_points
             .iter()
             .map(|&(p, v)| domain.trace(p, v, 300))
             .collect();
 
         if show_3d {
+            // On a critical caustic layer the phase manifold collapses to a
+            // thin 2D sheet; show it instead of a 3D torus.
+            let cf = crate::torus::ConfocalParams::standard();
+            if let Some(sheet) = phase3d::critical_phase_sheet(domain, second_int, 64) {
+                self.critical_sheet = Some(sheet);
+                // Keep the 2D start points/trajectories; clear the torus path.
+                self.phase_trajectories.clear();
+                self.torus_highlights.clear();
+                self.boundary_preimage.clear();
+                self.flat_trajectories.clear();
+                self.flat_highlights.clear();
+                self.flat_boundary.clear();
+                self.flat_level = None;
+                return;
+            }
+            self.critical_sheet = None;
+
             // Pseudo-integrable table (the L): classify the level and sample
             // through the flat chart, so torus levels render as a torus and
             // genus-2 levels as the unfolded cross.
-            let cf = crate::torus::ConfocalParams::standard();
             let table = crate::table::Table::from_domain(domain, &cf);
             if let Some(tab) = table {
                 let level = crate::pseudo::classify_level(second_int, &tab, &cf, 1e-9, 1e-9);
@@ -109,7 +150,7 @@ impl ViewState {
                             .collect();
                         // Example trajectories: short (few-bounce) flat traces
                         // from the *same* 2D start points, drawn red on top.
-                        self.flat_highlights = starts
+                        self.flat_highlights = start_points
                             .iter()
                             .map(|&(p, v)| {
                                 crate::pseudo::sample_flat_trajectory(domain, p, v, 4, 8, &level)
@@ -149,7 +190,7 @@ impl ViewState {
             // Red highlights on the torus: short (4-bounce) phase traces from
             // the *same* start points the 2D view drew, so both views agree on
             // where each torus lives.
-            self.torus_highlights = starts
+            self.torus_highlights = start_points
                 .iter()
                 .map(|&(p, v)| phase3d::sample_trajectory_phase_dense(domain, p, v, 4, 8, bounds))
                 .filter(|t| !t.is_empty())
@@ -166,6 +207,7 @@ impl ViewState {
             self.flat_highlights.clear();
             self.flat_boundary.clear();
             self.flat_level = None;
+            self.critical_sheet = None;
         }
     }
 }
@@ -188,6 +230,8 @@ pub struct App {
     view: ViewState,
     torus_render: crate::torus_render::TorusRender,
     burn_frames: Option<u32>,
+    show_molecule: bool,
+    markers: Vec<crate::molecule_view::LayerMarker>,
 }
 
 impl App {
@@ -211,9 +255,12 @@ impl App {
             view: ViewState::empty(),
             torus_render: crate::torus_render::TorusRender::new(),
             burn_frames: None,
+            show_molecule: true,
+            markers: Vec::new(),
         };
         // Build the initial view against the real configs.
         app.view = ViewState::new(app.idx, &app.configs, app.second_int, app.show_3d);
+        app.rebuild_markers();
         app
     }
 
@@ -236,12 +283,43 @@ impl App {
     fn rebuild(&mut self) {
         self.view
             .rebuild(self.idx, &self.configs, self.second_int, self.show_3d);
+        self.rebuild_markers();
+    }
+
+    /// Recompute the special-layer markers for the current preset.
+    fn rebuild_markers(&mut self) {
+        self.markers = crate::molecule_view::layer_markers(&self.configs[self.idx]);
+    }
+
+    /// Snap the second integral to the previous / next special layer.
+    fn snap_special(&mut self, dir: i32) {
+        if self.markers.is_empty() {
+            return;
+        }
+        let current = self.second_int;
+        if let Some(next) = crate::molecule_view::snap_nearest(&self.markers, current, dir) {
+            self.second_int = next;
+            self.rebuild();
+        }
     }
 
     fn handle_input(&mut self) {
         // Toggle animation
         if is_key_pressed(KeyCode::A) {
             self.animate = !self.animate;
+        }
+
+        // Toggle the molecule strip overlay
+        if is_key_pressed(KeyCode::M) {
+            self.show_molecule = !self.show_molecule;
+        }
+
+        // Snap to previous / next special layer
+        if is_key_pressed(KeyCode::LeftBracket) {
+            self.snap_special(-1);
+        }
+        if is_key_pressed(KeyCode::RightBracket) {
+            self.snap_special(1);
         }
 
         // Toggle 3D
@@ -269,13 +347,27 @@ impl App {
             0.0
         };
         if step != 0.0 {
-            self.second_int = if preset.is_confocal {
-                LambdaRange::of_domain(&preset.domain)
-                    .clamp(self.second_int + step, self.second_int)
+            if preset.is_confocal {
+                // Step through the special layers (walls, separatrix, focal
+                // axis, molecule critical values) so none can be skipped, and
+                // fall back to the fixed step when the preset has no layers.
+                let dir = step.signum() as i32;
+                if let Some(next) =
+                    crate::molecule_view::snap_nearest(&self.markers, self.second_int, dir)
+                {
+                    if (next - self.second_int).abs() > 1e-6 {
+                        self.second_int = next;
+                        changed = true;
+                    }
+                } else {
+                    self.second_int = LambdaRange::of_domain(&preset.domain)
+                        .clamp(self.second_int + step, self.second_int);
+                    changed = true;
+                }
             } else {
-                (self.second_int + step).clamp(-1.0, 1.0)
-            };
-            changed = true;
+                self.second_int = (self.second_int + step).clamp(-1.0, 1.0);
+                changed = true;
+            }
         }
 
         // Slider input
@@ -357,7 +449,10 @@ impl App {
             // Pseudo-integrable table (the L): draw the flat surface (torus for
             // torus levels, unfolded cross for genus-2).  Otherwise fall back to
             // the cached torus render.
-            if let Some(level) = &self.view.flat_level {
+            if let Some(sheet) = &self.view.critical_sheet {
+                // Critical layer: the phase manifold collapsed to a thin 2D sheet.
+                phase3d::draw_critical_sheet(sheet, &self.cam3d, w, h);
+            } else if let Some(level) = &self.view.flat_level {
                 crate::pseudo::draw_flat(&self.view.flat_trajectories, level, &self.cam3d, w, h);
                 // Example trajectories (red) and boundary preimage (cyan/orange)
                 // on the flat surface, matching the smooth torus view.
@@ -460,6 +555,26 @@ impl App {
                 if self.animate { "on" } else { "off" },
             );
             draw_text(&info, 12.0, 28.0, 18.0, color_u8!(200, 200, 220, 220));
+
+            // Molecule strip: the Reeb graph over λ, with a marker per special
+            // layer and a cursor at the current Λ.  `[` / `]` snap Λ to the
+            // previous / next special layer, so every one is reachable.
+            if self.show_molecule && preset.is_confocal {
+                let n = crate::molecule_view::draw_strip(
+                    &self.markers,
+                    self.second_int,
+                    w * 0.1,
+                    h * 0.82,
+                    w * 0.8,
+                );
+                draw_text(
+                    &format!("{n} special layers  |  [ ] snap  |  [M] hide"),
+                    w * 0.1,
+                    h * 0.82 + 30.0,
+                    14.0,
+                    color_u8!(150, 150, 190, 200),
+                );
+            }
 
             if preset.is_confocal {
                 draw_text(

@@ -266,6 +266,13 @@ impl Domain {
 /// `y` is monotonic and `x` follows the branch.  This renders the arc exactly
 /// where `intersect`/`on_arc` put it, instead of casting origin-rays (which hit
 /// the wrong hyperbola branch or fill the ellipse interior).
+/// Sample a confocal-quadric wall arc of the domain (`curve` between endpoints
+/// `a` and `b`) into `n` points (inclusive of both ends).  Public so critical-
+/// layer tools can slide a trajectory exactly along a boundary wall.
+pub fn sample_wall_arc(curve: &ConfocalQuadric, a: Vec2, b: Vec2, n: usize) -> Vec<Vec2> {
+    sample_quadric_arc(curve, a, b, n)
+}
+
 fn sample_quadric_arc(curve: &ConfocalQuadric, a: Vec2, b: Vec2, n: usize) -> Vec<Vec2> {
     let lam = curve.lambda;
     let ca = (curve.a_param - lam).max(1e-30);
@@ -317,6 +324,37 @@ pub fn confocal_quad(cf: ConfocalParams, lambda_ell: f32, lambda_hyp: f32) -> Do
             })
             .collect(),
     )
+}
+
+/// Build a full-ellipse domain: the single confocal ellipse `λ = lambda_ell`
+/// (no hyperbola walls).  This is the classical confocal-ellipse billiard whose
+/// phase manifold is two tori below the focal separatrix and one torus above
+/// (the A–B–A molecule).
+pub fn confocal_ellipse(cf: ConfocalParams, lambda_ell: f32) -> Domain {
+    let ell = crate::quadratic::confocal(cf, lambda_ell);
+    // The full ellipse is a single closed quadric arc; sample its 4 quadrant
+    // arcs so `intersect`/`reflect` see a closed boundary.
+    let a = cf.a;
+    let b = cf.b;
+    let ca = (a - lambda_ell).max(1e-30).sqrt();
+    let cb = (b - lambda_ell).max(1e-30).sqrt();
+    let pts = [
+        vec2(ca, 0.0),  // right
+        vec2(0.0, cb),  // top
+        vec2(-ca, 0.0), // left
+        vec2(0.0, -cb), // bottom
+    ];
+    let quad = |from: Vec2, to: Vec2| Segment::Quad {
+        curve: ell,
+        a: from,
+        b: to,
+    };
+    Domain::new(vec![
+        quad(pts[0], pts[1]),
+        quad(pts[1], pts[2]),
+        quad(pts[2], pts[3]),
+        quad(pts[3], pts[0]),
+    ])
 }
 
 /// L-shape built from confocal quadrics with a re-entrant 270° corner.

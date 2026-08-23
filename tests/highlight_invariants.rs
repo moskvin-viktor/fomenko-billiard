@@ -37,6 +37,10 @@ fn hyperbola_lambda(domain: &billiards::domain::Domain) -> f32 {
             }
         }
     }
+    if hyp == f32::MAX {
+        // No hyperbola wall (full ellipse): pick a value just above B.
+        return cf.b + 0.2;
+    }
     hyp + 0.2
 }
 
@@ -73,14 +77,23 @@ fn is_quad_confocal(domain: &billiards::domain::Domain) -> bool {
     billiards::torus_bounds(domain).1.is_some()
 }
 
-/// True if the domain is a confocal quadrilateral boundary (exactly 4 arcs).
+/// True if the domain is a confocal quadrilateral boundary: exactly 4 quadric
+/// arcs AND both an ellipse and a hyperbola wall (a full ellipse also has 4
+/// arcs but no hyperbola wall).
 fn ellipse_boundary_is_quadrilateral(domain: &billiards::domain::Domain) -> bool {
     let quad_arcs = domain
         .segments
         .iter()
         .filter(|s| matches!(s, billiards::domain::Segment::Quad { .. }))
         .count();
-    quad_arcs == 4
+    let cf = ConfocalParams::standard();
+    let has_ell = domain.segments.iter().any(
+        |s| matches!(s, billiards::domain::Segment::Quad { curve, .. } if curve.lambda < cf.b),
+    );
+    let has_hyp = domain.segments.iter().any(
+        |s| matches!(s, billiards::domain::Segment::Quad { curve, .. } if curve.lambda > cf.b),
+    );
+    quad_arcs == 4 && has_ell && has_hyp
 }
 
 // ---------------------------------------------------------------------------

@@ -56,6 +56,13 @@ pub fn all_presets() -> Vec<Preset> {
             start_center: vec2(1.0, 1.5),
         },
         Preset {
+            label: "Ellipse (confocal, full)",
+            domain: domain::confocal_ellipse(cf, 0.0),
+            second_integral_label: "Λ",
+            is_confocal: true,
+            start_center: vec2(0.0, 0.0),
+        },
+        Preset {
             label: "Square (polyline)",
             domain: domain::square(),
             second_integral_label: "θ/π",

@@ -435,6 +435,9 @@ fn hyperbola_lambda(domain: &domain::Domain) -> f32 {
             }
         }
     }
+    if hyp == f32::MAX {
+        return cf.b + 0.2; // full ellipse: no hyperbola wall
+    }
     hyp + 0.2
 }
 
@@ -557,6 +560,13 @@ fn test_num_tori_matches_regions() {
     let configs = presets::all_presets();
     for preset in &configs {
         if !preset.is_confocal || preset.label.contains("3π/2") {
+            continue;
+        }
+        // The y-split (upper/lower region) is the confocal-quadrilateral
+        // convention (Case B/C).  The full ellipse is the split-by-angular-
+        // momentum regime (Case A) with a different 2-torus structure, so it is
+        // excluded here (covered by `tests/ellipse_phase.rs`).
+        if preset.label.contains("Ellipse (confocal") {
             continue;
         }
         let domain = &preset.domain;

@@ -25,6 +25,44 @@ impl PhasePoint {
     }
 }
 
+/// A flat 2D phase manifold at a **critical** caustic level, where the phase
+/// manifold collapses to a thin sheet instead of a torus.
+///
+/// The sheet is the border piece (degenerate caustic) swept by the two tangent
+/// velocity directions, rendered as a flat surface rather than a 3D donut.  For
+/// the domain border this is a circle (a closed curve); for the interior
+/// degenerate segments (`b`, `a`) it is a strip.
+#[derive(Clone, Debug)]
+pub struct CriticalSheet {
+    /// The caustic value of this sheet.
+    pub lam: f32,
+    /// Flat points on the sheet: `(x, y)` position and a phase-space indicator.
+    pub points: Vec<Vec2>,
+}
+
+/// Sample the collapsed 2D phase manifold on a critical caustic level.
+///
+/// At a critical value the caustic degenerates to a border piece (focal
+/// segment at `b`, vertical segment at `a`, or a hyperbola wall); the phase
+/// manifold collapses to that piece swept by its tangent direction — a thin
+/// 2D sheet.  Returns `None` for regular (non-critical) levels.
+pub fn critical_phase_sheet(
+    domain: &crate::domain::Domain,
+    lam: f32,
+    n: usize,
+) -> Option<CriticalSheet> {
+    let structure = crate::confocal::ConfocalStructure::of_domain(domain)?;
+    let starts = crate::confocal::critical_caustic_starts(&structure, domain, lam, n)?;
+    if starts.is_empty() {
+        return Some(CriticalSheet {
+            lam,
+            points: Vec::new(),
+        });
+    }
+    let points = starts.into_iter().map(|(p, _)| p).collect();
+    Some(CriticalSheet { lam, points })
+}
+
 /// The stride for drawing a cloud of `n` points under a `budget` cap, so the
 /// drawn set `0, step, 2·step, …` has at most `budget` elements.
 ///
@@ -503,11 +541,31 @@ pub fn boundary_preimage_points(
         ));
     };
 
-    // Walls: the physical boundary of the billiard.  The two unit tangents
-    // through a wall point are the two phase-space sheets that hit that wall.
-    for p in domain.sample_boundary(24) {
-        for vel in velocities_for_lambda(p, lam, cf.a, cf.b) {
-            map_velocity(p, vel, false);
+    // Elliptic border: on the elliptic side (λc < b) the outer ellipse is a
+    // turning point of the λ₁-libration, where the ball glides tangent to the
+    // ellipse.  This maps to a *full circle* on each of the two tori (upper arc
+    // → torus 0, lower arc → torus 1).  The velocity is tangent to the outer
+    // ellipse Q_λ_ell = 0, i.e. v ∥ ∇⊥Q_λ_ell (d₁ = 0), not a caustic tangent.
+    let ell_wall = crate::confocal::ConfocalStructure::of_domain(domain)
+        .map(|s| s.lambda_ell)
+        .unwrap_or(0.0);
+    if lam < cf.b - 1e-4 {
+        let ell_quad = crate::quadratic::confocal(cf, ell_wall);
+        // Sample the outer-ellipse arcs directly (denser and exact).
+        let mut samples = Vec::new();
+        for seg in &domain.segments {
+            if let crate::domain::Segment::Quad { curve, a, b } = seg {
+                if (curve.lambda - ell_wall).abs() < 1e-4 {
+                    samples.extend(crate::domain::sample_wall_arc(curve, *a, *b, 40));
+                }
+            }
+        }
+        for p in samples {
+            // Tangent to the outer ellipse (the λ₁-libration turning point).
+            let g = ell_quad.grad(p);
+            let tan = vec2(-g.y, g.x).normalize();
+            map_velocity(p, tan, false);
+            map_velocity(p, -tan, false);
         }
     }
 
@@ -649,6 +707,39 @@ pub fn draw_phase_trajectories_scaled(
             c.a = alpha;
             draw_line(a.x, a.y, b.x, b.y, 1.6, c);
         }
+    }
+}
+
+/// Draw a critical phase sheet: the collapsed 2D phase manifold on a critical
+/// caustic level.  Rendered as a thin flat surface (a plane laid in the
+/// `xz`-plane) instead of a 3D torus, so the collapse to 2D is visible.
+///
+/// * domain border (hyperbola wall) → a closed circle;
+/// * interior degenerate segment (`b`, `a`) → a thin strip.
+pub fn draw_critical_sheet(sheet: &CriticalSheet, cam: &OrbitCamera3, win_w: f32, win_h: f32) {
+    if sheet.points.is_empty() {
+        return;
+    }
+    const POINT_BUDGET: usize = 18_000;
+    let step = decimation_step(sheet.points.len(), POINT_BUDGET);
+    // Scale to fill the view: use a flat spread comparable to a torus lobe.
+    let scale = crate::torus_render::DomainScale::default().r_major;
+
+    for (i, pt) in sheet.points.iter().enumerate() {
+        if i % step != 0 {
+            continue;
+        }
+        // Lay the border piece down flat in the xz-plane, centered and scaled.
+        let pos = vec3(pt.x * scale / 2.0, 0.0, pt.y * scale / 2.0);
+        let s = cam.project(pos, win_w, win_h);
+        if s.z < -0.1 {
+            continue;
+        }
+        let depth = (-s.z).clamp(0.5, 5.0);
+        let alpha = (0.5 + 0.3 * (1.0 - (depth - 0.5) / 4.5)).clamp(0.2, 0.9);
+        let radius = 1.6 + 0.5 * (1.0 - (depth - 0.5) / 4.5);
+        let (r, g, b) = (210, 120, 240); // violet: critical/singular
+        draw_circle(s.x, s.y, radius, color_u8!(r, g, b, (alpha * 255.0) as u8));
     }
 }
 
