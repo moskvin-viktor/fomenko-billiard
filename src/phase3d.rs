@@ -25,27 +25,31 @@ impl PhasePoint {
     }
 }
 
-/// A flat 2D phase manifold at a **critical** caustic level, where the phase
-/// manifold collapses to a thin sheet instead of a torus.
+/// The phase manifold at a **critical** caustic level, where the caustic
+/// degenerates to a border piece and the manifold collapses to a **closed 1D
+/// orbit** — a circle S¹.
 ///
-/// The sheet is the border piece (degenerate caustic) swept by the two tangent
-/// velocity directions, rendered as a flat surface rather than a 3D donut.  For
-/// the domain border this is a circle (a closed curve); for the interior
-/// degenerate segments (`b`, `a`) it is a strip.
+/// The ball slides along the border piece in one direction, reflects at the
+/// corner, and slides back; the forward and return passes glue together at the
+/// two turning points into a single circle.  We embed that circle in 3D so the
+/// S¹ topology is visible instead of a misleading flat line.
 #[derive(Clone, Debug)]
 pub struct CriticalSheet {
     /// The caustic value of this sheet.
     pub lam: f32,
-    /// Flat points on the sheet: `(x, y)` position and a phase-space indicator.
-    pub points: Vec<Vec2>,
+    /// The closed 1D orbit (a circle) on the degenerate layer, embedded in 3D.
+    /// The forward pass along the border piece traces the top half of the
+    /// circle, the return pass the bottom half, meeting at the two turning
+    /// points.
+    pub circle: Vec<Vec3>,
 }
 
-/// Sample the collapsed 2D phase manifold on a critical caustic level.
+/// Sample the collapsed phase manifold on a critical caustic level.
 ///
 /// At a critical value the caustic degenerates to a border piece (focal
 /// segment at `b`, vertical segment at `a`, or a hyperbola wall); the phase
-/// manifold collapses to that piece swept by its tangent direction — a thin
-/// 2D sheet.  Returns `None` for regular (non-critical) levels.
+/// manifold collapses to the closed orbit sliding along that piece — a circle.
+/// Returns `None` for regular (non-critical) levels.
 pub fn critical_phase_sheet(
     domain: &crate::domain::Domain,
     lam: f32,
@@ -56,11 +60,41 @@ pub fn critical_phase_sheet(
     if starts.is_empty() {
         return Some(CriticalSheet {
             lam,
-            points: Vec::new(),
+            circle: Vec::new(),
         });
     }
-    let points = starts.into_iter().map(|(p, _)| p).collect();
-    Some(CriticalSheet { lam, points })
+    let circle = build_degenerate_orbit(&starts);
+    Some(CriticalSheet { lam, circle })
+}
+
+/// Build the closed 1D orbit (a circle) for a degenerate caustic layer.
+///
+/// `starts` are the border-piece points in order along the piece, each with its
+/// tangent velocity.  The orbit slides along the piece one way, reflects, and
+/// slides back — so we embed it as a circle in the xz-plane: the forward pass
+/// traces the top half (`φ ∈ [0, π]`), the return pass the bottom half
+/// (`φ ∈ [π, 2π]`), and they meet at the two turning points.  This makes the
+/// S¹ topology of the phase manifold visible.
+fn build_degenerate_orbit(starts: &[(Vec2, Vec2)]) -> Vec<Vec3> {
+    let n = starts.len();
+    if n < 2 {
+        return Vec::new();
+    }
+    let r = 1.0;
+    let mut out = Vec::with_capacity(2 * n);
+    // Forward pass: arc fraction t ∈ [0,1] → φ ∈ [0, π].
+    for i in 0..n {
+        let t = i as f32 / (n - 1) as f32;
+        let phi = std::f32::consts::PI * t;
+        out.push(vec3(r * phi.cos(), 0.0, r * phi.sin()));
+    }
+    // Return pass: arc fraction t ∈ [1,0] → φ ∈ [π, 2π].
+    for i in (0..n).rev() {
+        let t = i as f32 / (n - 1) as f32;
+        let phi = std::f32::consts::PI * (2.0 - t);
+        out.push(vec3(r * phi.cos(), 0.0, r * phi.sin()));
+    }
+    out
 }
 
 /// The stride for drawing a cloud of `n` points under a `budget` cap, so the
@@ -710,29 +744,47 @@ pub fn draw_phase_trajectories_scaled(
     }
 }
 
-/// Draw a critical phase sheet: the collapsed 2D phase manifold on a critical
-/// caustic level.  Rendered as a thin flat surface (a plane laid in the
-/// `xz`-plane) instead of a 3D torus, so the collapse to 2D is visible.
-///
-/// * domain border (hyperbola wall) → a closed circle;
-/// * interior degenerate segment (`b`, `a`) → a thin strip.
+/// Draw a critical phase sheet: the closed 1D orbit (a circle) on a degenerate
+/// caustic level.  The forward and return passes along the border piece are
+/// embedded as the two halves of a circle, so the S¹ topology of the collapsed
+/// phase manifold is visible.
 pub fn draw_critical_sheet(sheet: &CriticalSheet, cam: &OrbitCamera3, win_w: f32, win_h: f32) {
-    if sheet.points.is_empty() {
+    if sheet.circle.len() < 2 {
         return;
     }
     const POINT_BUDGET: usize = 18_000;
-    let step = decimation_step(sheet.points.len(), POINT_BUDGET);
+    let step = decimation_step(sheet.circle.len(), POINT_BUDGET);
     // Scale to fill the view: use a flat spread comparable to a torus lobe.
     let scale = crate::torus_render::DomainScale::default().r_major;
 
-    for (i, pt) in sheet.points.iter().enumerate() {
-        if i % step != 0 {
+    // Project the circle points.
+    let projected: Vec<Vec3> = sheet
+        .circle
+        .iter()
+        .map(|p| cam.project(*p * scale, win_w, win_h))
+        .collect();
+
+    // Draw the circle as a closed polyline, depth-sorted hue.
+    let n = projected.len();
+    for (i, win) in projected.windows(2).enumerate() {
+        let a = win[0];
+        let b = win[1];
+        if a.z < -0.1 || b.z < -0.1 {
             continue;
         }
-        // Lay the border piece down flat in the xz-plane, centered and scaled.
-        let pos = vec3(pt.x * scale / 2.0, 0.0, pt.y * scale / 2.0);
-        let s = cam.project(pos, win_w, win_h);
-        if s.z < -0.1 {
+        let t = i as f32 / n as f32;
+        let hue = 30.0 + t * 200.0;
+        let color = crate::render::hsl_to_rgb(hue, 0.85, 0.55);
+        let depth = (-a.z.min(b.z)).clamp(0.5, 5.0);
+        let alpha = (0.4 + 0.6 * (1.0 - (depth - 0.5) / 4.5)).min(1.0);
+        let mut c = color;
+        c.a = alpha;
+        draw_line(a.x, a.y, b.x, b.y, 2.0, c);
+    }
+
+    // Bright marker dots so the orbit is easy to spot.
+    for (i, s) in projected.iter().enumerate() {
+        if i % step != 0 || s.z < -0.1 {
             continue;
         }
         let depth = (-s.z).clamp(0.5, 5.0);

@@ -13,29 +13,8 @@ use crate::torus::ConfocalParams;
 /// The ordered, deduplicated special caustic values of a domain, all within
 /// `(0, a)`.
 pub fn special_layers(domain: &crate::domain::Domain, cf: &ConfocalParams) -> Vec<f32> {
-    let mut vals = Vec::new();
-
-    // Molecule critical values from the rectilinear λ-chart table (L, T, Z, …).
-    if let Some(tab) = Table::from_domain(domain, cf) {
-        vals.extend(critical_values_sorted(&tab, cf));
-    }
-
-    // Boundary walls.
-    if let Some(s) = crate::confocal::ConfocalStructure::of_domain(domain) {
-        vals.push(s.lambda_ell);
-        if let Some(h) = s.lambda_hyp {
-            vals.push(h);
-        }
-    }
-
-    // The two degeneracies.
-    vals.push(cf.b);
-    vals.push(cf.a);
-
-    vals.retain(|&v| v > 0.0 && v <= cf.a + 1e-6);
-    vals.sort_by(|x, y| x.total_cmp(y));
-    vals.dedup();
-    vals
+    // Single source of truth: the bifurcation module owns every special value.
+    crate::bifurcation::critical_values(domain, cf)
 }
 
 /// The complete ordered navigation list: every special layer *and* uniform
@@ -66,11 +45,6 @@ pub fn all_layers(domain: &crate::domain::Domain, cf: &ConfocalParams) -> Vec<f3
     vals.sort_by(|x, y| x.total_cmp(y));
     vals.dedup();
     vals
-}
-
-/// `molecule::critical_values` sorted (it is already, but re-sorted defensively).
-fn critical_values_sorted(table: &Table, cf: &ConfocalParams) -> Vec<f32> {
-    crate::molecule::critical_values(table, cf, 1e-6)
 }
 
 /// The label of a special layer: which degeneracy / transition / wall it is.

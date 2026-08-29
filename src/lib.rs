@@ -1,4 +1,5 @@
 pub mod app;
+pub mod bifurcation;
 pub mod confocal;
 pub mod domain;
 pub mod molecule;

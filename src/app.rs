@@ -50,8 +50,8 @@ struct ViewState {
     flat_boundary: Vec<(crate::pseudo::FlatPhasePoint, bool)>,
     /// The classified level of the current flat view (torus vs genus-2).
     flat_level: Option<crate::pseudo::Level>,
-    /// At a critical caustic level, the collapsed 2D phase manifold (a thin
-    /// flat sheet) instead of a 3D torus.  None on regular levels.
+    /// At a critical caustic level, the collapsed phase manifold (a closed 1D
+    /// orbit — a circle) instead of a 3D torus.  None on regular levels.
     critical_sheet: Option<phase3d::CriticalSheet>,
 }
 
@@ -115,59 +115,79 @@ impl ViewState {
             .collect();
 
         if show_3d {
-            // On a critical caustic layer the phase manifold collapses to a
-            // thin 2D sheet; show it instead of a 3D torus.
             let cf = crate::torus::ConfocalParams::standard();
-            if let Some(sheet) = phase3d::critical_phase_sheet(domain, second_int, 64) {
-                self.critical_sheet = Some(sheet);
-                // Keep the 2D start points/trajectories; clear the torus path.
-                self.phase_trajectories.clear();
-                self.torus_highlights.clear();
-                self.boundary_preimage.clear();
-                self.flat_trajectories.clear();
-                self.flat_highlights.clear();
-                self.flat_boundary.clear();
-                self.flat_level = None;
-                return;
-            }
-            self.critical_sheet = None;
-
-            // Pseudo-integrable table (the L): classify the level and sample
-            // through the flat chart, so torus levels render as a torus and
-            // genus-2 levels as the unfolded cross.
-            let table = crate::table::Table::from_domain(domain, &cf);
-            if let Some(tab) = table {
-                let level = crate::pseudo::classify_level(second_int, &tab, &cf, 1e-9, 1e-9);
-                match &level {
-                    crate::pseudo::Level::Torus { .. }
-                    | crate::pseudo::Level::GenusSurface { .. } => {
-                        let dense_starts = crate::dense_caustic_starts(domain, second_int, 24);
-                        self.flat_trajectories = dense_starts
-                            .iter()
-                            .map(|&(p, v)| {
-                                crate::pseudo::sample_flat_trajectory(domain, p, v, 200, 8, &level)
-                            })
-                            .collect();
-                        // Example trajectories: short (few-bounce) flat traces
-                        // from the *same* 2D start points, drawn red on top.
-                        self.flat_highlights = start_points
-                            .iter()
-                            .map(|&(p, v)| {
-                                crate::pseudo::sample_flat_trajectory(domain, p, v, 4, 8, &level)
-                            })
-                            .filter(|t| !t.is_empty())
-                            .collect();
-                        // π⁻¹(boundary): walls + caustic on the flat map.
-                        self.flat_boundary =
-                            crate::pseudo::sample_flat_boundary(domain, second_int, &level);
-                        self.flat_level = Some(level);
-                        // Clear the torus path for this view.
+            // Single source of truth for what this level is: degenerate critical
+            // layer, pseudo-integrable flat level, or generic tori.
+            match crate::bifurcation::classify(domain, &cf, second_int) {
+                // Degenerate critical layer: the phase manifold collapses to a
+                // closed 1D orbit (a circle) along the border piece.  Show the
+                // collapsed sheet instead of a 3D torus.
+                crate::bifurcation::PhaseManifold::Degenerate { .. } => {
+                    if let Some(sheet) = phase3d::critical_phase_sheet(domain, second_int, 64) {
+                        self.critical_sheet = Some(sheet);
+                        // Keep the 2D start points/trajectories; clear the torus path.
                         self.phase_trajectories.clear();
                         self.torus_highlights.clear();
                         self.boundary_preimage.clear();
+                        self.flat_trajectories.clear();
+                        self.flat_highlights.clear();
+                        self.flat_boundary.clear();
+                        self.flat_level = None;
                         return;
                     }
-                    _ => {}
+                    self.critical_sheet = None;
+                }
+
+                // Pseudo-integrable table (the L): sample through the flat chart,
+                // so torus levels render as a torus and genus-2 levels as the
+                // unfolded cross.
+                crate::bifurcation::PhaseManifold::Flat { level } => {
+                    let level = *level;
+                    match &level {
+                        crate::pseudo::Level::Torus { .. }
+                        | crate::pseudo::Level::GenusSurface { .. } => {
+                            let dense_starts = crate::dense_caustic_starts(domain, second_int, 24);
+                            self.flat_trajectories = dense_starts
+                                .iter()
+                                .map(|&(p, v)| {
+                                    crate::pseudo::sample_flat_trajectory(
+                                        domain, p, v, 200, 8, &level,
+                                    )
+                                })
+                                .collect();
+                            // Example trajectories: short (few-bounce) flat traces
+                            // from the *same* 2D start points, drawn red on top.
+                            self.flat_highlights = start_points
+                                .iter()
+                                .map(|&(p, v)| {
+                                    crate::pseudo::sample_flat_trajectory(
+                                        domain, p, v, 4, 8, &level,
+                                    )
+                                })
+                                .filter(|t| !t.is_empty())
+                                .collect();
+                            // π⁻¹(boundary): walls + caustic on the flat map.
+                            self.flat_boundary =
+                                crate::pseudo::sample_flat_boundary(domain, second_int, &level);
+                            self.flat_level = Some(level);
+                            // Clear the torus path for this view.
+                            self.phase_trajectories.clear();
+                            self.torus_highlights.clear();
+                            self.boundary_preimage.clear();
+                            return;
+                        }
+                        _ => {
+                            // Forbidden / separatrix: nothing to draw.
+                            self.clear_3d();
+                            return;
+                        }
+                    }
+                }
+
+                // Generic integrable level: dense fill of the 3D Liouville torus.
+                crate::bifurcation::PhaseManifold::Tori { .. }
+                | crate::bifurcation::PhaseManifold::Forbidden => {
+                    self.critical_sheet = None;
                 }
             }
 
@@ -200,15 +220,20 @@ impl ViewState {
             // mapped onto the torus in distinct colours.
             self.boundary_preimage = phase3d::boundary_preimage_points(domain, second_int, bounds);
         } else {
-            self.phase_trajectories.clear();
-            self.torus_highlights.clear();
-            self.boundary_preimage.clear();
-            self.flat_trajectories.clear();
-            self.flat_highlights.clear();
-            self.flat_boundary.clear();
-            self.flat_level = None;
-            self.critical_sheet = None;
+            self.clear_3d();
         }
+    }
+
+    /// Clear all 3D-phase-space derived state.
+    fn clear_3d(&mut self) {
+        self.phase_trajectories.clear();
+        self.torus_highlights.clear();
+        self.boundary_preimage.clear();
+        self.flat_trajectories.clear();
+        self.flat_highlights.clear();
+        self.flat_boundary.clear();
+        self.flat_level = None;
+        self.critical_sheet = None;
     }
 }
 
