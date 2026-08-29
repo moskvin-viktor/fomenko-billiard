@@ -149,23 +149,19 @@ fn elliptic_confocal_square(
 
 /// Cases B / C-hyperbola — hyperbolic caustic: both coordinates fold, and the
 /// accessible region is a single torus.
+///
+/// Angle convention: θ₁ is always the angle whose libration *collapses* at the
+/// degenerate levels of the band (matching the elliptic cases, where θ₁ is the
+/// wall–caustic libration).  Here that is the `λ₂` libration between the
+/// caustic `λc` and `a` — its width vanishes as `λc → a` (focal axis).  The
+/// surviving `λ₁` cycle (wall → b → wall) is θ₂.  With this convention the
+/// standard-donut embedder can always render a collapse as the *tube* radius
+/// shrinking (torus thins onto its equator ring) instead of the hole closing.
 fn hyperbolic(params: &mut TorusParams, s: &PhaseSample, r: &CaseParams) -> (f32, f32, u32) {
     let cf = params.confocal;
 
-    // Compute the `θ₁` phase before re-borrowing `params.cache` for `l2`.
-    let sig = if s.y >= 0.0 { 1.0 } else { -1.0 };
+    // The collapsing `λ₂` libration (caustic ↔ a): θ₁.
     let th1 = {
-        let h1 = params.cache.l1(params.lam_wall, cf.b, r.roots);
-        let u1 = h1.w_full + sig * h1.tail(r.lam1);
-        let f1 = std::f32::consts::PI * u1 / (2.0 * h1.w_full);
-        if -sig * r.d1 > 0.0 {
-            f1
-        } else {
-            2.0 * std::f32::consts::PI - f1
-        }
-    };
-
-    let th2 = {
         let h2 = params.cache.l2(r.lc, cf.a, r.roots);
         let tau = if s.x >= 0.0 { 1.0 } else { -1.0 };
         let u2 = h2.w_full - tau * h2.tail(r.lam2);
@@ -174,6 +170,19 @@ fn hyperbolic(params: &mut TorusParams, s: &PhaseSample, r: &CaseParams) -> (f32
             f2
         } else {
             2.0 * std::f32::consts::PI - f2
+        }
+    };
+
+    // The surviving `λ₁` cycle (wall → b → wall): θ₂.
+    let sig = if s.y >= 0.0 { 1.0 } else { -1.0 };
+    let th2 = {
+        let h1 = params.cache.l1(params.lam_wall, cf.b, r.roots);
+        let u1 = h1.w_full + sig * h1.tail(r.lam1);
+        let f1 = std::f32::consts::PI * u1 / (2.0 * h1.w_full);
+        if -sig * r.d1 > 0.0 {
+            f1
+        } else {
+            2.0 * std::f32::consts::PI - f1
         }
     };
 

@@ -307,7 +307,10 @@ pub fn caustic_starts(
 ///   together with the two horizontal rays (degenerate hyperbola).  Inside the
 ///   domain only the segment survives.
 /// * `Λ = a` — the vertical segment `x = 0, |y| ≤ √b` (degenerate hyperbola).
-/// * a hyperbola wall `Λ = λ_hyp` — the wall arc itself.
+///
+/// The hyperbola wall `Λ = λ_hyp` is *not* degenerate (the caustic coincides
+/// with the wall but the level keeps full area and stays a regular torus), so
+/// it is handled by the ordinary caustic sampler, not here.
 ///
 /// We sample points on the surviving piece/arc and give each the tangent
 /// velocity, so the trajectory is the ball sliding along the border.  Returns
@@ -381,12 +384,6 @@ pub fn critical_caustic_starts(
         Some(pts.into_iter().map(|p| (p, vec2(0.0, 1.0))).collect())
     } else if (lam - structure.lambda_ell).abs() < 1e-4 {
         wall_slide(structure.lambda_ell)
-    } else if let Some(h) = structure.lambda_hyp {
-        if (lam - h).abs() < 1e-4 {
-            wall_slide(h)
-        } else {
-            None
-        }
     } else {
         None
     };

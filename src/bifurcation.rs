@@ -42,6 +42,11 @@ pub enum PhaseManifold {
 }
 
 /// Which border piece a degenerate caustic collapsed onto.
+///
+/// Note λ = λ_hyp (a hyperbola wall) is *not* degenerate: the caustic merely
+/// coincides with the wall, the accessible region keeps its full area and the
+/// level is an ordinary Liouville torus (trajectories graze the wall).  Only
+/// the ellipse wall collapses the accessible annulus to zero width.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DegenerateKind {
     /// λ = b — the focal segment on the x-axis (degenerate ellipse).
@@ -50,8 +55,6 @@ pub enum DegenerateKind {
     FocalAxis,
     /// λ = λ_ell — the outer ellipse wall.
     EllipseWall,
-    /// λ = λ_hyp — a hyperbola wall.
-    HyperbolaWall,
 }
 
 /// Classify the phase manifold at a caustic level.
@@ -86,8 +89,11 @@ pub fn classify(domain: &Domain, cf: &ConfocalParams, lam: f32) -> PhaseManifold
 
 /// The degenerate border piece a caustic collapsed onto, `None` for regular levels.
 ///
-/// A degenerate caustic is one where `Q_λ = 0` degenerates to a border piece:
-/// the focal segment (`b`), the focal axis (`a`), or a wall (`λ_ell`, `λ_hyp`).
+/// A degenerate caustic is one where the phase manifold collapses to a 1D
+/// orbit: the focal segment (`b`), the focal axis (`a`), or the ellipse wall
+/// (`λ_ell`, where the accessible annulus between caustic and wall shrinks to
+/// nothing).  The hyperbola wall `λ_hyp` is a *regular* level: the caustic
+/// coincides with the wall but trajectories still fill a full 2D torus.
 pub fn degenerate_kind(domain: &Domain, cf: &ConfocalParams, lam: f32) -> Option<DegenerateKind> {
     let structure = ConfocalStructure::of_domain(domain)?;
     let b = cf.b;
@@ -102,17 +108,17 @@ pub fn degenerate_kind(domain: &Domain, cf: &ConfocalParams, lam: f32) -> Option
     if (lam - structure.lambda_ell).abs() < 1e-4 {
         return Some(DegenerateKind::EllipseWall);
     }
-    if let Some(h) = structure.lambda_hyp {
-        if (lam - h).abs() < 1e-4 {
-            return Some(DegenerateKind::HyperbolaWall);
-        }
-    }
     None
 }
 
 /// Every bifurcation point of a domain, in one place: the molecule critical
-/// values (from the rectilinear table when the domain is one), the boundary
-/// walls, and the two degeneracies `b` (focal separatrix) and `a` (focal axis).
+/// values (from the rectilinear table when the domain is one), the ellipse
+/// wall `λ_ell` (a degenerate layer, possibly at λ = 0), and the two
+/// degeneracies `b` (focal separatrix) and `a` (focal axis).
+///
+/// The hyperbola wall `λ_hyp` is *not* listed: it is a regular torus level
+/// (the caustic coincides with the wall but the level keeps full area), so it
+/// gets no special marker or snapping.
 ///
 /// This is the single source the app navigation, the molecule strip, and the
 /// tests all use, so the tolerance/ordering can't drift between them.
@@ -124,19 +130,16 @@ pub fn critical_values(domain: &Domain, cf: &ConfocalParams) -> Vec<f32> {
         vals.extend(crate::molecule::critical_values(&tab, cf, 1e-6));
     }
 
-    // Boundary walls.
+    // The ellipse wall (degenerate: the accessible annulus collapses there).
     if let Some(s) = ConfocalStructure::of_domain(domain) {
         vals.push(s.lambda_ell);
-        if let Some(h) = s.lambda_hyp {
-            vals.push(h);
-        }
     }
 
     // The two degeneracies.
     vals.push(cf.b);
     vals.push(cf.a);
 
-    vals.retain(|&v| v > 0.0 && v <= cf.a + 1e-6);
+    vals.retain(|&v| v >= 0.0 && v <= cf.a + 1e-6);
     vals.sort_by(|x, y| x.total_cmp(y));
     vals.dedup();
     vals

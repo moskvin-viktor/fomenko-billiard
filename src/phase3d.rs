@@ -25,77 +25,11 @@ impl PhasePoint {
     }
 }
 
-/// The phase manifold at a **critical** caustic level, where the caustic
-/// degenerates to a border piece and the manifold collapses to a **closed 1D
-/// orbit** — a circle S¹.
-///
-/// The ball slides along the border piece in one direction, reflects at the
-/// corner, and slides back; the forward and return passes glue together at the
-/// two turning points into a single circle.  We embed that circle in 3D so the
-/// S¹ topology is visible instead of a misleading flat line.
-#[derive(Clone, Debug)]
-pub struct CriticalSheet {
-    /// The caustic value of this sheet.
-    pub lam: f32,
-    /// The closed 1D orbit (a circle) on the degenerate layer, embedded in 3D.
-    /// The forward pass along the border piece traces the top half of the
-    /// circle, the return pass the bottom half, meeting at the two turning
-    /// points.
-    pub circle: Vec<Vec3>,
-}
-
-/// Sample the collapsed phase manifold on a critical caustic level.
-///
-/// At a critical value the caustic degenerates to a border piece (focal
-/// segment at `b`, vertical segment at `a`, or a hyperbola wall); the phase
-/// manifold collapses to the closed orbit sliding along that piece — a circle.
-/// Returns `None` for regular (non-critical) levels.
-pub fn critical_phase_sheet(
-    domain: &crate::domain::Domain,
-    lam: f32,
-    n: usize,
-) -> Option<CriticalSheet> {
-    let structure = crate::confocal::ConfocalStructure::of_domain(domain)?;
-    let starts = crate::confocal::critical_caustic_starts(&structure, domain, lam, n)?;
-    if starts.is_empty() {
-        return Some(CriticalSheet {
-            lam,
-            circle: Vec::new(),
-        });
-    }
-    let circle = build_degenerate_orbit(&starts);
-    Some(CriticalSheet { lam, circle })
-}
-
-/// Build the closed 1D orbit (a circle) for a degenerate caustic layer.
-///
-/// `starts` are the border-piece points in order along the piece, each with its
-/// tangent velocity.  The orbit slides along the piece one way, reflects, and
-/// slides back — so we embed it as a circle in the xz-plane: the forward pass
-/// traces the top half (`φ ∈ [0, π]`), the return pass the bottom half
-/// (`φ ∈ [π, 2π]`), and they meet at the two turning points.  This makes the
-/// S¹ topology of the phase manifold visible.
-fn build_degenerate_orbit(starts: &[(Vec2, Vec2)]) -> Vec<Vec3> {
-    let n = starts.len();
-    if n < 2 {
-        return Vec::new();
-    }
-    let r = 1.0;
-    let mut out = Vec::with_capacity(2 * n);
-    // Forward pass: arc fraction t ∈ [0,1] → φ ∈ [0, π].
-    for i in 0..n {
-        let t = i as f32 / (n - 1) as f32;
-        let phi = std::f32::consts::PI * t;
-        out.push(vec3(r * phi.cos(), 0.0, r * phi.sin()));
-    }
-    // Return pass: arc fraction t ∈ [1,0] → φ ∈ [π, 2π].
-    for i in (0..n).rev() {
-        let t = i as f32 / (n - 1) as f32;
-        let phi = std::f32::consts::PI * (2.0 - t);
-        out.push(vec3(r * phi.cos(), 0.0, r * phi.sin()));
-    }
-    out
-}
+// (The old `CriticalSheet` / `critical_phase_sheet` / `build_degenerate_orbit`
+// hardcoded a single xz-plane circle for every degenerate layer.  Degenerate
+// layers are now built by `crate::manifold::build_manifold` as
+// `Manifold::Curve1D` — circles read off the torus mapping — and drawn by
+// [`draw_curve1d`] below.)
 
 /// The stride for drawing a cloud of `n` points under a `budget` cap, so the
 /// drawn set `0, step, 2·step, …` has at most `budget` elements.
@@ -374,11 +308,19 @@ fn f_lam(th: f32, pos: Vec2, lam: f32, a: f32, b: f32) -> f32 {
 /// domain centre, normalised so the torus radius tracks it.
 pub fn accessible_region_scale(domain: &crate::domain::Domain, lam: f32) -> f32 {
     let cf = crate::torus::ConfocalParams::standard();
-    // Degenerate caustics (Λ = b or Λ = a) collapse to a segment; fall back to
-    // the domain extent so the torus stays a reasonable size.
-    if (lam - cf.b).abs() < 0.03 || (lam - cf.a).abs() < 0.03 {
-        return crate::render::CachedDomain::new(domain).domain_extent;
-    }
+    // Degenerate caustics (Λ = b or Λ = a) collapse to a segment, where the
+    // caustic sampler is ill-defined.  Instead of jumping to a fallback size
+    // (which made the torus scale discontinuous when sweeping λ), evaluate at
+    // a λ nudged just off the degeneracy — the caustic extent is continuous
+    // there, so the returned scale varies smoothly through the critical level.
+    const NUDGE: f32 = 2e-3;
+    let lam = if (lam - cf.b).abs() < NUDGE {
+        cf.b - NUDGE
+    } else if (lam - cf.a).abs() < NUDGE {
+        cf.a - NUDGE
+    } else {
+        lam
+    };
 
     let quad = crate::quadratic::confocal(cf, lam);
     let pts = quad.sample_boundary(400);
@@ -434,12 +376,20 @@ fn surface_normal(theta1: f32, theta2: f32) -> Vec3 {
 /// angles) and return both the 3D position and the outward surface normal.
 ///
 /// `torus_index` was baked into the point at sampling time; each disconnected
-/// region gets its own torus, offset in space so multiple tori are distinct.
-pub fn torus_embed(pt: &PhasePoint, r_major: f32, r_minor: f32, torus_index: u32) -> (Vec3, Vec3) {
-    let pos = embed_surface(pt.theta1, pt.theta2, r_major, r_minor);
+/// region gets its own torus, offset in space by `scale.gap` so multiple tori
+/// are distinct.  The scale carries the (possibly level-morphed, see
+/// [`crate::torus_render::DomainScale::morph_to_level`]) radii and lobe gap,
+/// so every drawer — tori, highlights, boundary preimage, degenerate curves —
+/// embeds through the identical geometry.
+pub fn torus_embed(
+    pt: &PhasePoint,
+    scale: &crate::torus_render::DomainScale,
+    torus_index: u32,
+) -> (Vec3, Vec3) {
+    let pos = embed_surface(pt.theta1, pt.theta2, scale.r_major, scale.r_minor);
     let normal = surface_normal(pt.theta1, pt.theta2);
     // Offset each torus in space so multiple lobes are visually distinct.
-    let offset = torus_index as f32 * 3.0 * r_major;
+    let offset = torus_index as f32 * scale.gap;
     (pos + vec3(offset, 0.0, 0.0), normal)
 }
 
@@ -485,9 +435,6 @@ pub fn draw_torus_highlights_scaled(
     win_h: f32,
     scale: &crate::torus_render::DomainScale,
 ) {
-    let r_major = scale.r_major;
-    let r_minor = scale.r_minor;
-
     // One representative per distinct torus index (trajectories never cross
     // between tori — each `torus_index` is a disconnected accessible region).
     let mut seen: Vec<u32> = Vec::new();
@@ -506,7 +453,7 @@ pub fn draw_torus_highlights_scaled(
         let projected: Vec<Vec3> = traj
             .iter()
             .map(|pt| {
-                let (p, _n) = torus_embed(pt, r_major, r_minor, pt.torus_index);
+                let (p, _n) = torus_embed(pt, scale, pt.torus_index);
                 cam.project(p, win_w, win_h)
             })
             .collect();
@@ -634,14 +581,11 @@ pub fn draw_boundary_preimage(
     if preimages.is_empty() {
         return;
     }
-    let r_major = scale.r_major;
-    let r_minor = scale.r_minor;
-
     // Sort by camera depth so nearer boundary points draw on top.
     let mut pts: Vec<(Vec3, u32, bool)> = preimages
         .iter()
         .map(|(pt, is_ca)| {
-            let (p, _n) = torus_embed(pt, r_major, r_minor, pt.torus_index);
+            let (p, _n) = torus_embed(pt, scale, pt.torus_index);
             let s = cam.project(p, win_w, win_h);
             (s, pt.torus_index, *is_ca)
         })
@@ -704,9 +648,6 @@ pub fn draw_phase_trajectories_scaled(
     win_h: f32,
     scale: &crate::torus_render::DomainScale,
 ) {
-    let r_major = scale.r_major;
-    let r_minor = scale.r_minor;
-
     for traj in trajectories {
         if traj.len() < 2 {
             continue;
@@ -717,7 +658,7 @@ pub fn draw_phase_trajectories_scaled(
         let projected: Vec<Vec3> = traj
             .iter()
             .map(|pt| {
-                let (p, _n) = torus_embed(pt, r_major, r_minor, pt.torus_index);
+                let (p, _n) = torus_embed(pt, scale, pt.torus_index);
                 cam.project(p, win_w, win_h)
             })
             .collect();
@@ -744,54 +685,72 @@ pub fn draw_phase_trajectories_scaled(
     }
 }
 
-/// Draw a critical phase sheet: the closed 1D orbit (a circle) on a degenerate
-/// caustic level.  The forward and return passes along the border piece are
-/// embedded as the two halves of a circle, so the S¹ topology of the collapsed
-/// phase manifold is visible.
-pub fn draw_critical_sheet(sheet: &CriticalSheet, cam: &OrbitCamera3, win_w: f32, win_h: f32) {
-    if sheet.circle.len() < 2 {
-        return;
-    }
+/// Draw the closed 1D curves of a degenerate caustic level
+/// (`Manifold::Curve1D`): one circle per collapsed torus, each an ordered loop
+/// of torus-angle points.
+///
+/// Every point is embedded via [`torus_embed`] with the *same* (level-morphed)
+/// scale and per-torus offset as the regular tori, so the circles are the
+/// exact geometric limit of the collapsing tori:
+///
+/// - at λ_ell, λ = b and λ = a the morph takes `r_minor → 0`, so each circle
+///   is the equator ring the thinning torus converges onto (θ₁ is always the
+///   collapsing angle — see `torus::map`);
+/// - at λ = b the morph also takes `gap → 2·r_major`, so the two rings touch
+///   at one point — the figure-eight needs no extra positioning.
+pub fn draw_curve1d(
+    circles: &[Vec<PhasePoint>],
+    scale: &crate::torus_render::DomainScale,
+    cam: &OrbitCamera3,
+    win_w: f32,
+    win_h: f32,
+) {
     const POINT_BUDGET: usize = 18_000;
-    let step = decimation_step(sheet.circle.len(), POINT_BUDGET);
-    // Scale to fill the view: use a flat spread comparable to a torus lobe.
-    let scale = crate::torus_render::DomainScale::default().r_major;
 
-    // Project the circle points.
-    let projected: Vec<Vec3> = sheet
-        .circle
-        .iter()
-        .map(|p| cam.project(*p * scale, win_w, win_h))
-        .collect();
-
-    // Draw the circle as a closed polyline, depth-sorted hue.
-    let n = projected.len();
-    for (i, win) in projected.windows(2).enumerate() {
-        let a = win[0];
-        let b = win[1];
-        if a.z < -0.1 || b.z < -0.1 {
+    for circle in circles {
+        if circle.len() < 2 {
             continue;
         }
-        let t = i as f32 / n as f32;
-        let hue = 30.0 + t * 200.0;
-        let color = crate::render::hsl_to_rgb(hue, 0.85, 0.55);
-        let depth = (-a.z.min(b.z)).clamp(0.5, 5.0);
-        let alpha = (0.4 + 0.6 * (1.0 - (depth - 0.5) / 4.5)).min(1.0);
-        let mut c = color;
-        c.a = alpha;
-        draw_line(a.x, a.y, b.x, b.y, 2.0, c);
-    }
+        let step = decimation_step(circle.len(), POINT_BUDGET);
 
-    // Bright marker dots so the orbit is easy to spot.
-    for (i, s) in projected.iter().enumerate() {
-        if i % step != 0 || s.z < -0.1 {
-            continue;
+        // Project the loop points through the (morphed) torus embedding.
+        let projected: Vec<Vec3> = circle
+            .iter()
+            .map(|pt| {
+                let (p, _n) = torus_embed(pt, scale, pt.torus_index);
+                cam.project(p, win_w, win_h)
+            })
+            .collect();
+
+        // Closed polyline (last segment wraps back to the first point).
+        let n = projected.len();
+        for i in 0..n {
+            let a = projected[i];
+            let b = projected[(i + 1) % n];
+            if a.z < -0.1 || b.z < -0.1 {
+                continue;
+            }
+            let t = i as f32 / n as f32;
+            let hue = 30.0 + t * 200.0;
+            let color = crate::render::hsl_to_rgb(hue, 0.85, 0.55);
+            let depth = (-a.z.min(b.z)).clamp(0.5, 5.0);
+            let alpha = (0.4 + 0.6 * (1.0 - (depth - 0.5) / 4.5)).min(1.0);
+            let mut c = color;
+            c.a = alpha;
+            draw_line(a.x, a.y, b.x, b.y, 2.0, c);
         }
-        let depth = (-s.z).clamp(0.5, 5.0);
-        let alpha = (0.5 + 0.3 * (1.0 - (depth - 0.5) / 4.5)).clamp(0.2, 0.9);
-        let radius = 1.6 + 0.5 * (1.0 - (depth - 0.5) / 4.5);
-        let (r, g, b) = (210, 120, 240); // violet: critical/singular
-        draw_circle(s.x, s.y, radius, color_u8!(r, g, b, (alpha * 255.0) as u8));
+
+        // Bright marker dots so the orbit is easy to spot.
+        for (i, s) in projected.iter().enumerate() {
+            if i % step != 0 || s.z < -0.1 {
+                continue;
+            }
+            let depth = (-s.z).clamp(0.5, 5.0);
+            let alpha = (0.5 + 0.3 * (1.0 - (depth - 0.5) / 4.5)).clamp(0.2, 0.9);
+            let radius = 1.6 + 0.5 * (1.0 - (depth - 0.5) / 4.5);
+            let (r, g, b) = (210, 120, 240); // violet: critical/singular
+            draw_circle(s.x, s.y, radius, color_u8!(r, g, b, (alpha * 255.0) as u8));
+        }
     }
 }
 
@@ -828,10 +787,6 @@ pub fn draw_phase_points_scaled(
     win_h: f32,
     scale: &crate::torus_render::DomainScale,
 ) {
-    // Torus radii — scaled to fill the view along with the domain.
-    let r_major = scale.r_major;
-    let r_minor = scale.r_minor;
-
     // Bound the per-raster point count so orbiting doesn't freeze the app.  A
     // large cloud is decimated with a uniform stride; the budget keeps the
     // profiled ~150K-draw_circle wall down to an interactive rate while
@@ -845,7 +800,7 @@ pub fn draw_phase_points_scaled(
             if pt_idx % step != 0 {
                 continue;
             }
-            let (p, normal) = torus_embed(pt, r_major, r_minor, pt.torus_index);
+            let (p, normal) = torus_embed(pt, scale, pt.torus_index);
             let s = cam.project(p, win_w, win_h);
             if s.z < -0.1 {
                 continue;

@@ -2,12 +2,13 @@
 //! caustic layers, phase manifolds must exist on special layers, and the UI
 //! must step through every layer (critical *and* regular) without skipping.
 //!
-//! A *degenerate* critical layer is one where the caustic collapses to a border
-//! piece and the ball slides along it: the ellipse wall `λ_ell`, the focal
-//! separatrix `b`, a hyperbola wall `λ_hyp`, or the focal axis `a`.  These are
-//! the layers the old code returned zero trajectories for.  Molecule-critical
-//! values (genus_jump, edge_swap, birth/death) are still *regular* levels and
-//! are handled by the ordinary caustic sampler.
+//! A *degenerate* critical layer is one where the phase manifold collapses to a
+//! 1D orbit: the ellipse wall `λ_ell`, the focal separatrix `b`, or the focal
+//! axis `a`.  The hyperbola wall `λ_hyp` is *not* degenerate — the caustic
+//! merely coincides with the wall, the accessible region keeps full area and
+//! the level is an ordinary Liouville torus.  Molecule-critical values
+//! (genus_jump, edge_swap, birth/death) are likewise *regular* levels handled
+//! by the ordinary caustic sampler.
 
 use billiards::presets::Preset;
 use billiards::torus::ConfocalParams;
@@ -24,16 +25,15 @@ fn confocal_presets() -> Vec<Preset> {
         .collect()
 }
 
-/// The degenerate critical values of a domain: `b`, `a`, and any wall
-/// (`λ_ell`, `λ_hyp`).  These are where the caustic collapses to a border piece.
+/// The degenerate critical values of a domain: `b`, `a`, and the ellipse wall
+/// `λ_ell`.  These are where the phase manifold collapses to a 1D orbit.  The
+/// hyperbola wall `λ_hyp` is deliberately *excluded*: it is a regular torus
+/// level (the caustic coincides with the wall but the level keeps full area).
 fn degenerate_layers(preset: &Preset) -> Vec<f32> {
     let cf = cf();
     let s = billiards::confocal::ConfocalStructure::of_domain(&preset.domain).unwrap();
     let mut v = vec![cf.b, cf.a, s.lambda_ell];
-    if let Some(h) = s.lambda_hyp {
-        v.push(h);
-    }
-    v.retain(|&x| x > 0.0 && x <= cf.a + 1e-6);
+    v.retain(|&x| x >= 0.0 && x <= cf.a + 1e-6);
     v.sort_by(|a, b| a.total_cmp(b));
     v.dedup();
     v
@@ -144,11 +144,14 @@ fn degenerate_starts_are_inside_domain() {
 // 2. Phase manifolds exist on special layers
 // ---------------------------------------------------------------------------
 
-/// Every special layer is reachable and, for the degenerate ones, the critical
-/// sheet (collapsed 2D phase manifold) exists and is non-empty.  Molecule-
-/// critical regular levels are handled by the ordinary torus path.
+/// Every special layer is reachable and, for the degenerate ones, the manifold
+/// table returns a collapsed 1D curve (or a flat/empty manifold when the piece
+/// misses the domain or the table is pseudo-integrable) — never a full 2D
+/// torus.  Molecule-critical regular levels are handled by the ordinary torus
+/// path.
 #[test]
 fn phase_manifold_exists_on_special_layers() {
+    use billiards::manifold::{build_manifold, Manifold, SampleConfig};
     let cf = cf();
     for preset in confocal_presets() {
         let domain = &preset.domain;
@@ -157,22 +160,18 @@ fn phase_manifold_exists_on_special_layers() {
             // get_start_points must not panic.
             let _ = billiards::get_start_points(lam, domain, true, Vec2::ZERO);
 
-            // Degenerate layers collapse to a 2D phase sheet.
+            // Degenerate layers collapse to closed 1D curves.
             if degenerate_layers(&preset)
                 .iter()
                 .any(|&d| (d - lam).abs() < 1e-4)
             {
-                let sheet = billiards::phase3d::critical_phase_sheet(domain, lam, 64);
+                let m = build_manifold(domain, lam, &SampleConfig::default());
                 assert!(
-                    sheet.is_some(),
-                    "{}: Λ={} critical_phase_sheet returned None",
+                    !matches!(m, Manifold::Torus2D { .. }),
+                    "{}: Λ={} degenerate layer produced a full 2D torus",
                     preset.label,
                     lam
                 );
-                // A degenerate piece may be empty when the border piece doesn't
-                // intersect the domain (e.g. the focal segment for the L-shape),
-                // but it must not be an error.
-                let _ = sheet.unwrap();
             } else {
                 // Regular layer: ordinary phase sampling stays finite.
                 let bounds = billiards::confocal::ConfocalStructure::of_domain(domain)
@@ -194,6 +193,204 @@ fn phase_manifold_exists_on_special_layers() {
                 }
             }
         }
+    }
+}
+
+/// Degenerate layers collapse to closed 1D circles with finite torus angles.
+/// The circle count is read off the torus mapping (never hardcoded): the
+/// separatrix `λ = b` is a figure-eight (2 circles), the focal axis `λ = a` a
+/// single circle, and wall layers at least one circle per sliding wall.
+#[test]
+fn degenerate_layers_collapse_to_circles() {
+    use billiards::manifold::{build_manifold, Manifold, SampleConfig};
+    let cf = cf();
+    for preset in confocal_presets() {
+        let domain = &preset.domain;
+        for &lam in &degenerate_layers(&preset) {
+            let m = build_manifold(domain, lam, &SampleConfig::default());
+            match m {
+                Manifold::Curve1D { circles, pinched } => {
+                    assert!(
+                        !circles.is_empty(),
+                        "{}: Λ={} Curve1D with zero circles",
+                        preset.label,
+                        lam
+                    );
+                    for (k, c) in circles.iter().enumerate() {
+                        assert!(
+                            c.len() >= 8,
+                            "{}: Λ={} circle {} too sparse ({} points)",
+                            preset.label,
+                            lam,
+                            k,
+                            c.len()
+                        );
+                        for p in c {
+                            assert!(
+                                p.theta1.is_finite() && p.theta2.is_finite(),
+                                "{}: Λ={} circle {} has non-finite torus angles",
+                                preset.label,
+                                lam,
+                                k
+                            );
+                        }
+                    }
+                    if (lam - cf.b).abs() < 1e-4 {
+                        assert_eq!(
+                            circles.len(),
+                            2,
+                            "{}: Λ=b separatrix must be a figure-eight (2 circles)",
+                            preset.label
+                        );
+                        assert!(
+                            pinched,
+                            "{}: Λ=b separatrix circles must be pinched",
+                            preset.label
+                        );
+                    } else {
+                        assert!(
+                            !pinched,
+                            "{}: Λ={} non-separatrix layer marked pinched",
+                            preset.label,
+                            lam
+                        );
+                    }
+                }
+                // The border piece may miss the domain entirely, and pseudo
+                // tables classify as flat before the degenerate branch.
+                Manifold::Empty | Manifold::FlatSurface { .. } => {}
+                Manifold::Torus2D { .. } => panic!(
+                    "{}: Λ={} degenerate layer produced a full 2D torus",
+                    preset.label, lam
+                ),
+            }
+        }
+    }
+}
+
+/// Square preset: exact circle topology at each degenerate layer.
+/// `λ = λ_ell = 0` → two wall circles (one per torus); `λ = b = 1` →
+/// figure-eight (2 circles); `λ = a = 4` → 1 circle (focal axis).  The
+/// hyperbola wall `λ_hyp = 2.5` is a *regular* level and must yield a full
+/// 2D torus, not a collapsed curve.
+#[test]
+fn square_degenerate_circle_topology() {
+    use billiards::manifold::{build_manifold, Manifold, SampleConfig};
+    let preset = confocal_presets()
+        .into_iter()
+        .find(|p| p.label.starts_with("Square: ellipse"))
+        .expect("Square preset");
+    let domain = &preset.domain;
+
+    let n_circles = |lam: f32| -> usize {
+        match build_manifold(domain, lam, &SampleConfig::default()) {
+            Manifold::Curve1D { circles, .. } => circles.len(),
+            other => panic!(
+                "Square Λ={lam}: expected Curve1D, got {}",
+                match other {
+                    Manifold::Torus2D { .. } => "Torus2D",
+                    Manifold::FlatSurface { .. } => "FlatSurface",
+                    Manifold::Empty => "Empty",
+                    Manifold::Curve1D { .. } => unreachable!(),
+                }
+            ),
+        }
+    };
+
+    assert_eq!(n_circles(0.0), 2, "Square Λ=λ_ell=0: two wall circles");
+    assert_eq!(n_circles(1.0), 2, "Square Λ=b: figure-eight");
+    assert_eq!(n_circles(4.0), 1, "Square Λ=a: single circle on focal axis");
+    assert!(
+        matches!(
+            build_manifold(domain, 2.5, &SampleConfig::default()),
+            Manifold::Torus2D { .. }
+        ),
+        "Square Λ_hyp=2.5: hyperbola wall is a regular level, expected Torus2D"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 2b. The torus geometry morphs smoothly onto the degenerate curves
+// ---------------------------------------------------------------------------
+
+/// `DomainScale::morph_to_level` reaches the exact degenerate limits and does
+/// not jump across the separatrix:
+/// - λ → λ_ell and λ → b: `r_minor → 0` (torus thins onto its equator ring);
+/// - λ → b from the elliptic side: `gap → 2·r_major` (the two rings touch —
+///   figure-eight);
+/// - λ → a: `r_minor → 0` (torus thins onto its equator ring; the hole never
+///   closes);
+/// - mid-band levels are untouched;
+/// - approaching b from both sides gives the same `r_minor` limit (0).
+#[test]
+fn torus_scale_morphs_continuously_to_degenerate_limits() {
+    use billiards::torus_render::DomainScale;
+    let cf = cf();
+    let preset = confocal_presets()
+        .into_iter()
+        .find(|p| p.label.starts_with("Square: ellipse"))
+        .expect("Square preset");
+    let s = billiards::confocal::ConfocalStructure::of_domain(&preset.domain).unwrap();
+    let base = DomainScale::of_extent(2.3);
+    let morph = |lam: f32| DomainScale::of_extent(2.3).morph_to_level(&s, lam);
+
+    // Exact limits.
+    let at_b = morph(cf.b);
+    assert!(at_b.r_minor.abs() < 1e-6, "Λ=b: r_minor must vanish");
+    assert!(
+        (at_b.gap - 2.0 * at_b.r_major).abs() < 1e-4,
+        "Λ=b: gap must equal 2·r_major so the rings touch (gap={}, r_major={})",
+        at_b.gap,
+        at_b.r_major
+    );
+    let at_a = morph(cf.a);
+    assert!(at_a.r_minor.abs() < 1e-6, "Λ=a: r_minor must vanish");
+    assert!(
+        at_a.r_major > 0.0,
+        "Λ=a: r_major must survive (equator ring — the hole never closes)"
+    );
+    let at_ell = morph(s.lambda_ell);
+    assert!(at_ell.r_minor.abs() < 1e-6, "Λ=λ_ell: r_minor must vanish");
+
+    // Mid-band untouched.
+    let mid = morph(0.5 * (s.lambda_ell + cf.b));
+    assert!(
+        (mid.r_minor - base.r_minor).abs() < 1e-6 && (mid.r_major - base.r_major).abs() < 1e-6,
+        "mid elliptic band must be unmorphed"
+    );
+
+    // No jump across the separatrix: both one-sided limits agree with λ=b.
+    let eps = 1e-4;
+    let below = morph(cf.b - eps);
+    let above = morph(cf.b + eps);
+    assert!(
+        below.r_minor < 1e-2 && above.r_minor < 1e-2,
+        "r_minor must be near 0 on both sides of Λ=b (below={}, above={})",
+        below.r_minor,
+        above.r_minor
+    );
+
+    // Smooth ramps: no step bigger than the sweep would explain.  `gap` is
+    // only meaningful on the two-torus (elliptic) side, so its continuity is
+    // only checked there.
+    let mut prev = morph(s.lambda_ell);
+    let mut prev_lam = s.lambda_ell;
+    let n = 200;
+    for i in 1..=n {
+        let lam = s.lambda_ell + (cf.a - s.lambda_ell) * i as f32 / n as f32;
+        let cur = morph(lam);
+        let mut pairs = vec![(prev.r_minor, cur.r_minor), (prev.r_major, cur.r_major)];
+        if lam <= cf.b && prev_lam <= cf.b {
+            pairs.push((prev.gap, cur.gap));
+        }
+        for (p, c) in pairs {
+            assert!(
+                (p - c).abs() < 0.2 * base.r_major,
+                "scale jumped at Λ={lam}: {p} -> {c}"
+            );
+        }
+        prev = cur;
+        prev_lam = lam;
     }
 }
 
@@ -238,10 +435,11 @@ fn markers_include_special_and_regular_layers() {
     }
 }
 
-/// The standard first domain (Square): special layers are exactly
-/// `{b=1.0, hyperbola wall=2.5, a=4.0}`, each has trajectories, and the step
-/// list visits the reachable elliptic + hyperbolic bands with regulars in
-/// between (never the forbidden gap `(1.0, 2.5)`).
+/// The standard first domain (Square): special layers are exactly the three
+/// degenerate ones `{λ_ell=0.0, b=1.0, a=4.0}` (the hyperbola wall 2.5 is a
+/// regular level with no marker), each has trajectories, and the step list
+/// visits the reachable elliptic + hyperbolic bands with regulars in between
+/// (never the forbidden gap `(1.0, 2.5)`).
 #[test]
 fn square_all_three_degenerate_layers_have_trajectories_and_manifolds() {
     let cf = cf();
@@ -253,11 +451,11 @@ fn square_all_three_degenerate_layers_have_trajectories_and_manifolds() {
 
     assert_eq!(
         billiards::molecule::special_layers(domain, &cf),
-        vec![1.0, 2.5, 4.0],
+        vec![0.0, 1.0, 4.0],
         "Square special layers"
     );
 
-    for &lam in &[1.0f32, 2.5, 4.0] {
+    for &lam in &[0.0f32, 1.0, 4.0] {
         assert!(
             !critical_starts(&preset, lam).is_empty(),
             "Λ={lam} no critical starts"

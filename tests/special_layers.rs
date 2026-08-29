@@ -53,8 +53,8 @@ fn markers_are_reachable_and_finite() {
         for m in &markers {
             assert!(m.lam.is_finite(), "{}: marker lam not finite", preset.label);
             assert!(
-                m.lam > 0.0 && m.lam <= cf.a + 1e-6,
-                "{}: marker lam {} out of (0, a]",
+                m.lam >= 0.0 && m.lam <= cf.a + 1e-6,
+                "{}: marker lam {} out of [0, a] (λ_ell = 0 is a valid wall layer)",
                 preset.label,
                 m.lam
             );

@@ -2,6 +2,7 @@ pub mod app;
 pub mod bifurcation;
 pub mod confocal;
 pub mod domain;
+pub mod manifold;
 pub mod molecule;
 pub mod molecule_view;
 pub mod phase3d;

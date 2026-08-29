@@ -41,7 +41,7 @@ pub fn all_layers(domain: &crate::domain::Domain, cf: &ConfocalParams) -> Vec<f3
         }
     }
 
-    vals.retain(|&v| v > 0.0 && v <= cf.a + 1e-6);
+    vals.retain(|&v| v >= 0.0 && v <= cf.a + 1e-6);
     vals.sort_by(|x, y| x.total_cmp(y));
     vals.dedup();
     vals

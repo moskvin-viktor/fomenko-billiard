@@ -50,9 +50,10 @@ struct ViewState {
     flat_boundary: Vec<(crate::pseudo::FlatPhasePoint, bool)>,
     /// The classified level of the current flat view (torus vs genus-2).
     flat_level: Option<crate::pseudo::Level>,
-    /// At a critical caustic level, the collapsed phase manifold (a closed 1D
-    /// orbit — a circle) instead of a 3D torus.  None on regular levels.
-    critical_sheet: Option<phase3d::CriticalSheet>,
+    /// At a degenerate critical level, the collapsed phase manifold: closed 1D
+    /// curves (one circle per collapsed torus, two touching at the separatrix)
+    /// instead of a 3D torus.  Empty on regular levels.
+    curve1d: Vec<Vec<phase3d::PhasePoint>>,
 }
 
 impl ViewState {
@@ -68,7 +69,7 @@ impl ViewState {
             flat_highlights: Vec::new(),
             flat_boundary: Vec::new(),
             flat_level: None,
-            critical_sheet: None,
+            curve1d: Vec::new(),
         }
     }
 
@@ -115,110 +116,86 @@ impl ViewState {
             .collect();
 
         if show_3d {
-            let cf = crate::torus::ConfocalParams::standard();
-            // Single source of truth for what this level is: degenerate critical
-            // layer, pseudo-integrable flat level, or generic tori.
-            match crate::bifurcation::classify(domain, &cf, second_int) {
-                // Degenerate critical layer: the phase manifold collapses to a
-                // closed 1D orbit (a circle) along the border piece.  Show the
-                // collapsed sheet instead of a 3D torus.
-                crate::bifurcation::PhaseManifold::Degenerate { .. } => {
-                    if let Some(sheet) = phase3d::critical_phase_sheet(domain, second_int, 64) {
-                        self.critical_sheet = Some(sheet);
-                        // Keep the 2D start points/trajectories; clear the torus path.
-                        self.phase_trajectories.clear();
-                        self.torus_highlights.clear();
-                        self.boundary_preimage.clear();
-                        self.flat_trajectories.clear();
-                        self.flat_highlights.clear();
-                        self.flat_boundary.clear();
-                        self.flat_level = None;
-                        return;
+            self.clear_3d();
+            if preset.is_confocal {
+                // Single source of truth: the level → manifold table.  Whatever
+                // it returns is what the 3D view draws.
+                let config = crate::manifold::SampleConfig::default();
+                match crate::manifold::build_manifold(domain, second_int, &config) {
+                    // Degenerate critical layer: the phase manifold collapsed
+                    // to closed 1D curves (one circle per collapsed torus).
+                    crate::manifold::Manifold::Curve1D { circles, .. } => {
+                        self.curve1d = circles;
                     }
-                    self.critical_sheet = None;
-                }
 
-                // Pseudo-integrable table (the L): sample through the flat chart,
-                // so torus levels render as a torus and genus-2 levels as the
-                // unfolded cross.
-                crate::bifurcation::PhaseManifold::Flat { level } => {
-                    let level = *level;
-                    match &level {
-                        crate::pseudo::Level::Torus { .. }
-                        | crate::pseudo::Level::GenusSurface { .. } => {
-                            let dense_starts = crate::dense_caustic_starts(domain, second_int, 24);
-                            self.flat_trajectories = dense_starts
-                                .iter()
-                                .map(|&(p, v)| {
-                                    crate::pseudo::sample_flat_trajectory(
-                                        domain, p, v, 200, 8, &level,
-                                    )
-                                })
-                                .collect();
-                            // Example trajectories: short (few-bounce) flat traces
-                            // from the *same* 2D start points, drawn red on top.
-                            self.flat_highlights = start_points
-                                .iter()
-                                .map(|&(p, v)| {
-                                    crate::pseudo::sample_flat_trajectory(
-                                        domain, p, v, 4, 8, &level,
-                                    )
-                                })
-                                .filter(|t| !t.is_empty())
-                                .collect();
-                            // π⁻¹(boundary): walls + caustic on the flat map.
-                            self.flat_boundary =
-                                crate::pseudo::sample_flat_boundary(domain, second_int, &level);
-                            self.flat_level = Some(level);
-                            // Clear the torus path for this view.
-                            self.phase_trajectories.clear();
-                            self.torus_highlights.clear();
-                            self.boundary_preimage.clear();
-                            return;
-                        }
-                        _ => {
-                            // Forbidden / separatrix: nothing to draw.
-                            self.clear_3d();
-                            return;
-                        }
+                    // Pseudo-integrable table (the L): flat-chart trajectories;
+                    // torus levels render as a torus, genus-2 as the cross.
+                    crate::manifold::Manifold::FlatSurface {
+                        trajectories,
+                        level,
+                    } => {
+                        self.flat_trajectories = trajectories;
+                        // Example trajectories: short (few-bounce) flat traces
+                        // from the *same* 2D start points, drawn red on top.
+                        self.flat_highlights = start_points
+                            .iter()
+                            .map(|&(p, v)| {
+                                crate::pseudo::sample_flat_trajectory(domain, p, v, 4, 8, &level)
+                            })
+                            .filter(|t| !t.is_empty())
+                            .collect();
+                        // π⁻¹(boundary): walls + caustic on the flat map.
+                        self.flat_boundary =
+                            crate::pseudo::sample_flat_boundary(domain, second_int, &level);
+                        self.flat_level = Some(level);
                     }
-                }
 
-                // Generic integrable level: dense fill of the 3D Liouville torus.
-                crate::bifurcation::PhaseManifold::Tori { .. }
-                | crate::bifurcation::PhaseManifold::Forbidden => {
-                    self.critical_sheet = None;
-                }
-            }
+                    // Generic integrable level: dense fill of the 3D Liouville
+                    // torus, plus red highlights and the boundary preimage.
+                    crate::manifold::Manifold::Torus2D { trajectories } => {
+                        self.phase_trajectories = trajectories;
+                        let bounds = crate::confocal::ConfocalStructure::of_domain(domain)
+                            .map(|s| s.torus_bounds())
+                            .unwrap_or((0.0, None));
+                        // Red highlights on the torus: short (4-bounce) phase
+                        // traces from the *same* start points the 2D view drew,
+                        // so both views agree on where each torus lives.
+                        self.torus_highlights = start_points
+                            .iter()
+                            .map(|&(p, v)| {
+                                phase3d::sample_trajectory_phase_dense(domain, p, v, 4, 8, bounds)
+                            })
+                            .filter(|t| !t.is_empty())
+                            .collect();
+                        // π⁻¹(boundary): the walls + caustic curves of the
+                        // billiard, mapped onto the torus in distinct colours.
+                        self.boundary_preimage =
+                            phase3d::boundary_preimage_points(domain, second_int, bounds);
+                    }
 
-            // Dense fill of the 3D Liouville torus.  Densely sample the caustic
-            // so the union of trajectories sweeps out the full torus surface; a
-            // polyline domain has only its single start point.
-            let bounds = crate::confocal::ConfocalStructure::of_domain(domain)
-                .map(|s| s.torus_bounds())
-                .unwrap_or((0.0, None));
-            let dense_starts = if preset.is_confocal {
-                crate::dense_caustic_starts(domain, second_int, 24)
+                    // Forbidden level: nothing to draw.
+                    crate::manifold::Manifold::Empty => {}
+                }
             } else {
-                crate::get_start_points(second_int, domain, false, preset.start_center)
-            };
-            self.phase_trajectories = dense_starts
-                .iter()
-                .map(|&(p, v)| phase3d::sample_trajectory_phase_dense(domain, p, v, 200, 8, bounds))
-                .collect();
-
-            // Red highlights on the torus: short (4-bounce) phase traces from
-            // the *same* start points the 2D view drew, so both views agree on
-            // where each torus lives.
-            self.torus_highlights = start_points
-                .iter()
-                .map(|&(p, v)| phase3d::sample_trajectory_phase_dense(domain, p, v, 4, 8, bounds))
-                .filter(|t| !t.is_empty())
-                .collect();
-
-            // π⁻¹(boundary): the walls + caustic curves of the billiard,
-            // mapped onto the torus in distinct colours.
-            self.boundary_preimage = phase3d::boundary_preimage_points(domain, second_int, bounds);
+                // Polyline domain: no confocal structure, no manifold table —
+                // dense-sample the single start point directly.
+                let bounds = (0.0, None);
+                let dense_starts =
+                    crate::get_start_points(second_int, domain, false, preset.start_center);
+                self.phase_trajectories = dense_starts
+                    .iter()
+                    .map(|&(p, v)| {
+                        phase3d::sample_trajectory_phase_dense(domain, p, v, 200, 8, bounds)
+                    })
+                    .collect();
+                self.torus_highlights = start_points
+                    .iter()
+                    .map(|&(p, v)| {
+                        phase3d::sample_trajectory_phase_dense(domain, p, v, 4, 8, bounds)
+                    })
+                    .filter(|t| !t.is_empty())
+                    .collect();
+            }
         } else {
             self.clear_3d();
         }
@@ -233,7 +210,7 @@ impl ViewState {
         self.flat_highlights.clear();
         self.flat_boundary.clear();
         self.flat_level = None;
-        self.critical_sheet = None;
+        self.curve1d.clear();
     }
 }
 
@@ -471,12 +448,28 @@ impl App {
             self.cam3d.handle_input();
             phase3d::draw_axes(&self.cam3d, w, h, cache.domain_extent);
 
+            // One torus scale for every 3D branch: sized by the accessible
+            // region at the current Λ, then *morphed toward the degenerate
+            // limit* of the level — near a critical λ the radii/gap collapse
+            // continuously, so the tori shrink smoothly onto the 1D curves of
+            // the degenerate layers instead of jumping (see
+            // `DomainScale::morph_to_level`).
+            let scale = crate::torus_render::DomainScale::of_extent(
+                phase3d::accessible_region_scale(&preset.domain, self.second_int),
+            );
+            let scale = match crate::confocal::ConfocalStructure::of_domain(&preset.domain) {
+                Some(s) => scale.morph_to_level(&s, self.second_int),
+                None => scale,
+            };
+
             // Pseudo-integrable table (the L): draw the flat surface (torus for
             // torus levels, unfolded cross for genus-2).  Otherwise fall back to
             // the cached torus render.
-            if let Some(sheet) = &self.view.critical_sheet {
-                // Critical layer: the phase manifold collapsed to a thin 2D sheet.
-                phase3d::draw_critical_sheet(sheet, &self.cam3d, w, h);
+            if !self.view.curve1d.is_empty() {
+                // Degenerate layer: closed 1D curves (circles / figure-eight)
+                // embedded at the fully-collapsed limit of the same morphed
+                // scale/offset the regular torus render uses.
+                phase3d::draw_curve1d(&self.view.curve1d, &scale, &self.cam3d, w, h);
             } else if let Some(level) = &self.view.flat_level {
                 crate::pseudo::draw_flat(&self.view.flat_trajectories, level, &self.cam3d, w, h);
                 // Example trajectories (red) and boundary preimage (cyan/orange)
@@ -504,9 +497,6 @@ impl App {
                 // animated the torus grows/shrinks with the accessible region.
                 // The billiard's boundary (walls + caustic) is drawn on the
                 // surface in distinct colours.
-                let scale = crate::torus_render::DomainScale::of_extent(
-                    phase3d::accessible_region_scale(&preset.domain, self.second_int),
-                );
                 let ctx = crate::torus_render::DrawContext {
                     cam: &self.cam3d,
                     win_w: w,

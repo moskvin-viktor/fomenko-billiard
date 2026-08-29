@@ -27,6 +27,8 @@ pub fn camera_moved(a: (f32, f32, f32), b: (f32, f32, f32), eps: f32) -> bool {
 pub struct DomainScale {
     pub r_major: f32,
     pub r_minor: f32,
+    /// Centre-to-centre distance between torus lobe `i` and lobe `i+1`.
+    pub gap: f32,
 }
 
 impl DomainScale {
@@ -35,10 +37,71 @@ impl DomainScale {
     /// of the 3D view.  The reference values match the torus drawn before this
     /// feature when `extent ≈ 2.3`, so existing renders change little.
     pub fn of_extent(extent: f32) -> Self {
+        let r_major = 0.7 * extent;
         Self {
-            r_major: 0.7 * extent,
+            r_major,
             r_minor: 0.26 * extent,
+            gap: 3.0 * r_major,
         }
+    }
+
+    /// Smoothly deform the torus geometry toward the degenerate limit of the
+    /// level λ, so sweeping λ makes the tori *continuously* collapse onto the
+    /// 1D curves of the critical layers instead of jumping:
+    ///
+    /// The torus map's convention is that θ₁ is *always* the collapsing
+    /// libration (see `torus::map::hyperbolic`), so every degeneration renders
+    /// as the tube radius shrinking — the torus thins onto its equator ring,
+    /// the hole never closes:
+    ///
+    /// - λ → λ_ell (ellipse wall): the wall–caustic libration collapses,
+    ///   `r_minor → 0` — each torus thins onto its equator ring of radius
+    ///   `r_major`.
+    /// - λ → b (separatrix, from either side): `r_minor → 0` as above, and on
+    ///   the two-tori side the lobes slide together, `gap → 2·r_major`, so at
+    ///   λ = b the two equator rings touch at one point — the figure-eight is
+    ///   the exact geometric limit.
+    /// - λ → a (focal axis): the caustic–`a` libration collapses, `r_minor →
+    ///   0` — the single torus thins onto its equator ring, which is the
+    ///   focal-axis orbit.
+    ///
+    /// Each factor is a smoothstep of the distance to the critical value,
+    /// normalised by a fraction of the containing band, so mid-band tori are
+    /// untouched and every factor reaches 0 exactly at the critical level.
+    pub fn morph_to_level(mut self, structure: &crate::confocal::ConfocalStructure, lam: f32) -> Self {
+        /// Fraction of the band width over which the collapse happens.
+        const WINDOW: f32 = 0.35;
+        fn smoothstep(x: f32) -> f32 {
+            let x = x.clamp(0.0, 1.0);
+            x * x * (3.0 - 2.0 * x)
+        }
+        // Collapse factor for distance `d` to a critical value inside a band
+        // of width `w`: 0 at the critical value, 1 past the morph window.
+        let factor = |d: f32, w: f32| -> f32 {
+            if w <= 0.0 {
+                return 1.0;
+            }
+            smoothstep(d / (WINDOW * w))
+        };
+
+        let (a, b) = (structure.cf.a, structure.cf.b);
+        let w_ell = b - structure.lambda_ell; // elliptic band width
+        let w_hyp = a - b; // hyperbolic band width
+
+        if lam <= b {
+            // Elliptic side: collapse at the ellipse wall and at the separatrix.
+            let s = factor(lam - structure.lambda_ell, w_ell) * factor(b - lam, w_ell);
+            self.r_minor *= s;
+            // Two lobes slide together approaching the separatrix.
+            let s_sep = factor(b - lam, w_ell);
+            self.gap = self.r_major * (2.0 + s_sep);
+        } else {
+            // Hyperbolic side: the θ₁ libration collapses both at the
+            // separatrix and at the focal axis — the torus thins onto its
+            // equator ring; the hole (r_major) is preserved.
+            self.r_minor *= factor(lam - b, w_hyp) * factor(a - lam, w_hyp);
+        }
+        self
     }
 }
 
@@ -81,8 +144,10 @@ impl TorusRender {
     }
 
     /// A cheap fingerprint of the torus geometry: number of trajectories, total
-    /// point count, and a sample angle.  O(number of trajectories), not O(points).
-    fn geometry_key(trajectories: &[Vec<PhasePoint>]) -> (usize, usize, u32) {
+    /// point count, a sample angle, and the torus scale (radii/gap morph with
+    /// λ, so a scale change must re-rasterize even when the point cloud is
+    /// unchanged).  O(number of trajectories), not O(points).
+    fn geometry_key(trajectories: &[Vec<PhasePoint>], scale: &DomainScale) -> (usize, usize, u32) {
         let n_trajs = trajectories.len();
         let n_pts: usize = trajectories.iter().map(|t| t.len()).sum();
         // Sample a few angles to catch same-count-but-different-geometry cases.
@@ -93,6 +158,13 @@ impl TorusRender {
                     .wrapping_mul(31)
                     .wrapping_add(p.theta1.to_bits() ^ p.theta2.to_bits());
             }
+        }
+        for bits in [
+            scale.r_major.to_bits(),
+            scale.r_minor.to_bits(),
+            scale.gap.to_bits(),
+        ] {
+            sample = sample.wrapping_mul(31).wrapping_add(bits);
         }
         (n_trajs, n_pts, sample)
     }
@@ -134,7 +206,7 @@ impl TorusRender {
     ) {
         let size = (ctx.win_w as u32, ctx.win_h as u32);
         let cam_key = ctx.cam.state_key();
-        let geom_key = Self::geometry_key(trajectories);
+        let geom_key = Self::geometry_key(trajectories, ctx.scale);
 
         // Recreate the target if the window resized.
         if self.target.is_none() || self.size != size {
