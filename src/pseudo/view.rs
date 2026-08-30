@@ -4,16 +4,15 @@
 //! `torus_embed`.  For the L that is wrong on both counts the user hit:
 //! torus levels didn't show a torus, and genus-2 levels didn't look like
 //! genus 2.  This module samples a trajectory through the **flat** chart
-//! (`pseudo::to_flat`) and draws it with the correct embedding:
-//!
-//! - [`Level::Torus`] — the flat rectangle `(u1, u2)` with opposite edges
-//!   identified → a donut (via `torus_angles`).
-//! - [`Level::GenusSurface`] — a **double torus (pretzel)**: two torus lobes
-//!   joined by a bridge, so the genus reads as genus 2 (via `pretzel_embed`).
+//! (`pseudo::to_flat`) and draws it with the **unified morph embedding**
+//! ([`super::morph::unified_with_normal`]): one continuous surface family —
+//! donut + shrinking handle — for torus and genus-2 levels alike, so the
+//! genus bifurcations render as a smooth pinch instead of a surface swap.
 
 use super::classify::Level;
+use super::geometry::LevelGeometry;
 use super::map::to_flat;
-use super::render::{donut_with_normal, pretzel_with_normal};
+use super::morph::{pinch_point_3d, unified_with_normal, FlatMorph};
 use crate::torus::{ConfocalParams, PhaseSample};
 use macroquad::prelude::*;
 
@@ -149,136 +148,84 @@ pub fn sample_flat_boundary(
     out
 }
 
-/// Draw a set of flat trajectories with the correct embedding for the level.
-///
-/// * `Level::Torus` — each point maps to torus angles `(θ1, θ2)` from the flat
-///   rectangle, then to a donut (the doc's "revert to normalized angles").
-/// * `Level::GenusSurface` — each point maps onto the double-torus pretzel
-///   (two tori glued), colored by sheet.
+/// Draw a set of flat trajectories on the unified morph embedding: a Lambert
+/// depth-shaded point cloud plus hue-swept trajectory lines (matching the
+/// smooth confocal tori), and — when the handle is nearly collapsed — a
+/// bright marker at the pinch point so the singular level is legible.
 pub fn draw_flat(
     trajectories: &[Vec<FlatPhasePoint>],
-    level: &Level,
+    geo: &LevelGeometry,
+    morph: &FlatMorph,
     cam: &crate::phase3d::OrbitCamera3,
     win_w: f32,
     win_h: f32,
 ) {
-    match level {
-        Level::Torus { shape, .. } => {
-            let (w1, w2) = *shape;
-            // Same Lambert depth-shaded point cloud + hue-swept trajectory lines
-            // as the smooth confocal tori, so a torus level of the L reads as a
-            // real shaded 3D torus instead of a flat brown disc.
-            let light = vec3(0.4, 0.6, 0.7).normalize();
+    if geo.u1_extent <= 0.0 || geo.u2_extent <= 0.0 {
+        return;
+    }
+    let light = vec3(0.4, 0.6, 0.7).normalize();
 
-            // Dense shaded point cloud, decimated to a budget for interactivity.
-            const POINT_BUDGET: usize = 18_000;
-            let total: usize = trajectories.iter().map(|t| t.len()).sum();
-            let step = crate::phase3d::decimation_step(total, POINT_BUDGET);
-            for traj in trajectories {
-                for (pt_idx, pt) in traj.iter().enumerate() {
-                    if pt_idx % step != 0 {
-                        continue;
-                    }
-                    let (pos, n) = donut_with_normal(pt.u1, pt.u2, w1, w2);
-                    let s = cam.project(pos, win_w, win_h);
-                    if s.z < -0.1 {
-                        continue;
-                    }
-                    let lambert = (n.dot(light)).max(0.0);
-                    let shade = 0.16 + 0.38 * lambert;
-                    let depth = (-s.z).clamp(0.5, 5.0);
-                    let alpha = (0.22 + 0.35 * (1.0 - (depth - 0.5) / 4.5)).clamp(0.05, 0.6);
-                    let radius = 1.4 + 0.6 * (1.0 - (depth - 0.5) / 4.5);
-                    let r = (255.0 * shade) as u8;
-                    let g = (170.0 * shade) as u8;
-                    let b = (90.0 * shade) as u8;
-                    draw_circle(s.x, s.y, radius, color_u8!(r, g, b, (alpha * 255.0) as u8));
-                }
+    // Dense shaded point cloud, decimated to a budget for interactivity.
+    const POINT_BUDGET: usize = 18_000;
+    let total: usize = trajectories.iter().map(|t| t.len()).sum();
+    let step = crate::phase3d::decimation_step(total, POINT_BUDGET);
+    for traj in trajectories {
+        for (pt_idx, pt) in traj.iter().enumerate() {
+            if pt_idx % step != 0 {
+                continue;
             }
+            let (pos, n) = unified_with_normal(pt.u1, pt.u2, pt.sheet.0, pt.sheet.1, geo, morph);
+            let s = cam.project(pos, win_w, win_h);
+            if s.z < -0.1 {
+                continue;
+            }
+            let lambert = (n.dot(light)).max(0.0);
+            let shade = 0.16 + 0.38 * lambert;
+            let depth = (-s.z).clamp(0.5, 5.0);
+            let alpha = (0.22 + 0.35 * (1.0 - (depth - 0.5) / 4.5)).clamp(0.05, 0.6);
+            let radius = 1.4 + 0.6 * (1.0 - (depth - 0.5) / 4.5);
+            let r = (255.0 * shade) as u8;
+            let g = (170.0 * shade) as u8;
+            let b = (90.0 * shade) as u8;
+            draw_circle(s.x, s.y, radius, color_u8!(r, g, b, (alpha * 255.0) as u8));
+        }
+    }
 
-            // Hue-swept trajectory lines so individual orbits are visible,
-            // mirroring the smooth case's `draw_phase_trajectories`.
-            for traj in trajectories {
-                let n = traj.len();
-                for (i, win) in traj.windows(2).enumerate() {
-                    let a = win[0];
-                    let b = win[1];
-                    let (pa, _na) = donut_with_normal(a.u1, a.u2, w1, w2);
-                    let (pb, _nb) = donut_with_normal(b.u1, b.u2, w1, w2);
-                    let sa = cam.project(pa, win_w, win_h);
-                    let sb = cam.project(pb, win_w, win_h);
-                    if sa.z < -0.1 || sb.z < -0.1 {
-                        continue;
-                    }
-                    let t = i as f32 / n.max(1) as f32;
-                    let hue = 30.0 + t * 200.0;
-                    let color = crate::render::hsl_to_rgb(hue, 0.85, 0.55);
-                    let depth = (-sa.z.min(sb.z)).clamp(0.5, 5.0);
-                    let alpha = (0.3 + 0.5 * (1.0 - (depth - 0.5) / 4.5)).clamp(0.1, 0.8);
-                    let mut c = color;
-                    c.a = alpha;
-                    draw_line(sa.x, sa.y, sb.x, sb.y, 1.5, c);
-                }
+    // Hue-swept trajectory lines so individual orbits are visible,
+    // mirroring the smooth case's `draw_phase_trajectories`.
+    for traj in trajectories {
+        let n = traj.len();
+        for (i, win) in traj.windows(2).enumerate() {
+            let a = win[0];
+            let b = win[1];
+            let (pa, _na) = unified_with_normal(a.u1, a.u2, a.sheet.0, a.sheet.1, geo, morph);
+            let (pb, _nb) = unified_with_normal(b.u1, b.u2, b.sheet.0, b.sheet.1, geo, morph);
+            let sa = cam.project(pa, win_w, win_h);
+            let sb = cam.project(pb, win_w, win_h);
+            if sa.z < -0.1 || sb.z < -0.1 {
+                continue;
+            }
+            let t = i as f32 / n.max(1) as f32;
+            let hue = 30.0 + t * 200.0;
+            let color = crate::render::hsl_to_rgb(hue, 0.85, 0.55);
+            let depth = (-sa.z.min(sb.z)).clamp(0.5, 5.0);
+            let alpha = (0.3 + 0.5 * (1.0 - (depth - 0.5) / 4.5)).clamp(0.1, 0.8);
+            let mut c = color;
+            c.a = alpha;
+            draw_line(sa.x, sa.y, sb.x, sb.y, 1.5, c);
+        }
+    }
+
+    // Singular pinch marker: when the handle is (nearly) collapsed, the level
+    // is a pinched torus — flag the pinch point brightly.
+    if morph.handle_t < 0.05 {
+        if let Some(p) = pinch_point_3d(geo, morph) {
+            let s = cam.project(p, win_w, win_h);
+            if s.z > -0.1 {
+                draw_circle(s.x, s.y, 7.0, color_u8!(255, 240, 120, 230));
+                draw_circle(s.x, s.y, 3.5, color_u8!(255, 255, 255, 255));
             }
         }
-        Level::GenusSurface { region, .. } => {
-            // Cross moduli: A1 = u1(α₁), A2 = u1(α₂), B1 = u2(β₂), B2 = u2(β₃).
-            let m = cross_moduli(region);
-            // Same Lambert depth-shaded point cloud + hue-swept trajectory lines
-            // as the torus levels, so the genus-2 pretzel reads in the same style
-            // and the torus → genus-2 topology evolution looks coherent.
-            let light = vec3(0.4, 0.6, 0.7).normalize();
-
-            const POINT_BUDGET: usize = 18_000;
-            let total: usize = trajectories.iter().map(|t| t.len()).sum();
-            let step = crate::phase3d::decimation_step(total, POINT_BUDGET);
-            for traj in trajectories {
-                for (pt_idx, pt) in traj.iter().enumerate() {
-                    if pt_idx % step != 0 {
-                        continue;
-                    }
-                    let (pos, nrm) = pretzel_with_normal(pt.u1, pt.u2, pt.sheet.0, pt.sheet.1, m);
-                    let s = cam.project(pos, win_w, win_h);
-                    if s.z < -0.1 {
-                        continue;
-                    }
-                    let lambert = (nrm.dot(light)).max(0.0);
-                    let shade = 0.16 + 0.38 * lambert;
-                    let depth = (-s.z).clamp(0.5, 5.0);
-                    let alpha = (0.22 + 0.35 * (1.0 - (depth - 0.5) / 4.5)).clamp(0.05, 0.6);
-                    let radius = 1.4 + 0.6 * (1.0 - (depth - 0.5) / 4.5);
-                    let r = (255.0 * shade) as u8;
-                    let g = (170.0 * shade) as u8;
-                    let b = (90.0 * shade) as u8;
-                    draw_circle(s.x, s.y, radius, color_u8!(r, g, b, (alpha * 255.0) as u8));
-                }
-            }
-
-            // Hue-swept trajectory lines, matching the torus arm.
-            for traj in trajectories {
-                let n = traj.len();
-                for (i, win) in traj.windows(2).enumerate() {
-                    let a = win[0];
-                    let b = win[1];
-                    let (pa, _na) = pretzel_with_normal(a.u1, a.u2, a.sheet.0, a.sheet.1, m);
-                    let (pb, _nb) = pretzel_with_normal(b.u1, b.u2, b.sheet.0, b.sheet.1, m);
-                    let sa = cam.project(pa, win_w, win_h);
-                    let sb = cam.project(pb, win_w, win_h);
-                    if sa.z < -0.1 || sb.z < -0.1 {
-                        continue;
-                    }
-                    let t = i as f32 / n.max(1) as f32;
-                    let hue = 30.0 + t * 200.0;
-                    let color = crate::render::hsl_to_rgb(hue, 0.85, 0.55);
-                    let depth = (-sa.z.min(sb.z)).clamp(0.5, 5.0);
-                    let alpha = (0.3 + 0.5 * (1.0 - (depth - 0.5) / 4.5)).clamp(0.1, 0.8);
-                    let mut c = color;
-                    c.a = alpha;
-                    draw_line(sa.x, sa.y, sb.x, sb.y, 1.5, c);
-                }
-            }
-        }
-        _ => {}
     }
 }
 
@@ -287,12 +234,12 @@ pub fn draw_flat(
 /// (few-bounce) traces, one per start point, embedded onto the surface.
 pub fn draw_flat_highlights(
     highlights: &[Vec<FlatPhasePoint>],
-    level: &Level,
+    geo: &LevelGeometry,
+    morph: &FlatMorph,
     cam: &crate::phase3d::OrbitCamera3,
     win_w: f32,
     win_h: f32,
 ) {
-    let embed_depth = flat_embed_point(level);
     for traj in highlights {
         if traj.len() < 2 {
             continue;
@@ -300,7 +247,7 @@ pub fn draw_flat_highlights(
         let projected: Vec<Vec3> = traj
             .iter()
             .map(|pt| {
-                let p = embed_depth(pt);
+                let p = unified_with_normal(pt.u1, pt.u2, pt.sheet.0, pt.sheet.1, geo, morph).0;
                 cam.project(p, win_w, win_h)
             })
             .collect();
@@ -326,7 +273,8 @@ pub fn draw_flat_highlights(
 /// so the two views agree.
 pub fn draw_flat_boundary(
     boundary: &[(FlatPhasePoint, bool)],
-    level: &Level,
+    geo: &LevelGeometry,
+    morph: &FlatMorph,
     cam: &crate::phase3d::OrbitCamera3,
     win_w: f32,
     win_h: f32,
@@ -334,11 +282,10 @@ pub fn draw_flat_boundary(
     if boundary.is_empty() {
         return;
     }
-    let embed_depth = flat_embed_point(level);
     let mut pts: Vec<(Vec3, bool)> = boundary
         .iter()
         .map(|(pt, is_ca)| {
-            let p = embed_depth(pt);
+            let p = unified_with_normal(pt.u1, pt.u2, pt.sheet.0, pt.sheet.1, geo, morph).0;
             (cam.project(p, win_w, win_h), *is_ca)
         })
         .collect();
@@ -363,36 +310,3 @@ pub fn draw_flat_boundary(
     }
 }
 
-/// Embed a flat point onto the surface chosen for the level (donut for a torus
-/// level, pretzel for a genus-2 level), returning its 3D position.
-fn flat_embed_point<'a>(level: &'a Level) -> Box<dyn Fn(&FlatPhasePoint) -> Vec3 + 'a> {
-    match level {
-        Level::Torus { shape, .. } => {
-            let (w1, w2) = *shape;
-            Box::new(move |pt: &FlatPhasePoint| donut_with_normal(pt.u1, pt.u2, w1, w2).0)
-        }
-        Level::GenusSurface { region, .. } => {
-            let m = cross_moduli(region);
-            Box::new(move |pt: &FlatPhasePoint| {
-                pretzel_with_normal(pt.u1, pt.u2, pt.sheet.0, pt.sheet.1, m).0
-            })
-        }
-        _ => Box::new(move |_pt| vec3(0.0, 0.0, 0.0)),
-    }
-}
-
-/// Cross moduli from the accessible region: `A1 = u1(α₁)`, `A2 = u1(α₂)`,
-/// `B1 = u2(β₂)`, `B2 = u2(β₃)`.  These are the flat extents of the two legs.
-fn cross_moduli(region: &super::classify::AccessibleRegion) -> super::render::CrossModuli {
-    // The region's u1/u2 grid lines are monotone; the cross uses the full
-    // extent of each leg.  For the standard L: A1 is the tall-leg width
-    // (u1 at the reflex corner), A2 the base width, B1 the base height,
-    // B2 the tall-leg height.
-    let u1 = &region.u1;
-    let u2 = &region.u2;
-    let a1 = u1.get(1).copied().unwrap_or(0.0); // u1(α₁)
-    let a2 = u1.last().copied().unwrap_or(a1); // u1(α₂)
-    let b1 = u2.get(1).copied().unwrap_or(0.0); // u2(β₂)
-    let b2 = u2.last().copied().unwrap_or(b1); // u2(β₃)
-    super::render::CrossModuli { a1, a2, b1, b2 }
-}

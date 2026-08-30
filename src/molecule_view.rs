@@ -59,19 +59,20 @@ pub fn layer_markers(preset: &Preset) -> Vec<LayerMarker> {
 /// transition; ordinary (regular) reachable levels between criticals get an
 /// edge-swap so they render neutrally rather than as a singularity.
 fn classify_kind(lam: f32, domain: &crate::domain::Domain, cf: &ConfocalParams) -> TransitionKind {
+    if let Some(tab) = crate::table::Table::from_domain(domain, cf) {
+        // Only a molecule critical value (or the death cap) is a real
+        // transition; other levels — including λ = b on a non-focal table —
+        // are regular and should render neutrally.
+        if let Some(s) = crate::bifurcation::table_singular(&tab, cf, lam) {
+            return s.kind;
+        }
+        return TransitionKind::EdgeSwap;
+    }
     if (lam - cf.b).abs() < 1e-4 {
         return TransitionKind::SplitMerge;
     }
     if (lam - cf.a).abs() < 1e-4 {
         return TransitionKind::AEnd;
-    }
-    if let Some(tab) = crate::table::Table::from_domain(domain, cf) {
-        // Only a molecule critical value is a real transition; other levels are
-        // regular and should render neutrally.
-        let crit = crate::molecule::critical_values(&tab, cf, 1e-6);
-        if crit.iter().any(|&c| (c - lam).abs() < 1e-4) {
-            return crate::molecule::classify_transition(&tab, cf, lam, 1e-4).kind;
-        }
     }
     TransitionKind::EdgeSwap
 }

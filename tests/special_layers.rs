@@ -19,8 +19,11 @@ fn confocal_presets() -> Vec<Preset> {
         .collect()
 }
 
-/// The special layers include the separatrix `b`, the focal axis `a`, and for
-/// every quadric-arc domain at least one wall.
+/// The special layers cover every degeneracy the domain can reach: the
+/// separatrix `b` for all presets; for a smooth confocal domain also the focal
+/// axis `a`; for a pseudo-integrable table instead the death cap (the
+/// outermost hyperbola wall, beyond which nothing is reachable — `a` lies past
+/// it and gets no marker).
 #[test]
 fn special_layers_cover_degeneracies() {
     let cf = cf();
@@ -28,16 +31,32 @@ fn special_layers_cover_degeneracies() {
         let layers = billiards::molecule::special_layers(&preset.domain, &cf);
         assert!(
             layers.iter().any(|&l| (l - cf.b).abs() < 1e-4),
-            "{}: special layers must include the separatrix b={}",
+            "{}: special layers must include b={}",
             preset.label,
             cf.b
         );
-        assert!(
-            layers.iter().any(|&l| (l - cf.a).abs() < 1e-4),
-            "{}: special layers must include the focal a={}",
-            preset.label,
-            cf.a
-        );
+        if let Some(tab) = billiards::table::Table::from_domain(&preset.domain, &cf) {
+            let top = *tab.hyp.last().unwrap();
+            assert!(
+                layers.iter().any(|&l| (l - top).abs() < 1e-4),
+                "{}: table layers must include the death cap {}",
+                preset.label,
+                top
+            );
+            assert!(
+                !layers.iter().any(|&l| (l - cf.a).abs() < 1e-4),
+                "{}: a={} is beyond the death cap and must not be a layer",
+                preset.label,
+                cf.a
+            );
+        } else {
+            assert!(
+                layers.iter().any(|&l| (l - cf.a).abs() < 1e-4),
+                "{}: special layers must include the focal a={}",
+                preset.label,
+                cf.a
+            );
+        }
         assert!(!layers.is_empty(), "{}: no special layers", preset.label);
     }
 }

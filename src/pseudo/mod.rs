@@ -15,13 +15,17 @@
 //! See `docs/pseudo_integrable.md` for the end-to-end pipeline.
 
 pub mod classify;
+pub mod geometry;
 pub mod map;
+pub mod morph;
 pub mod render;
 pub mod ulength;
 pub mod view;
 
-pub use classify::{classify_level, AccessibleRegion, Level};
+pub use classify::{classify_level, table_touches_focal, AccessibleRegion, Level};
+pub use geometry::{level_geometry, LevelGeometry};
 pub use map::{reflex_corners_in_flat, to_flat, FlatError, FlatSample};
+pub use morph::{flat_morph, pinch_point_3d, unified_embed, unified_with_normal, FlatMorph};
 pub use render::{
     cross_embed, donut_with_normal, pretzel_embed, pretzel_with_normal, sheets, torus_angles,
     CrossModuli,

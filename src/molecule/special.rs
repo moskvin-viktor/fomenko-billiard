@@ -54,6 +54,20 @@ pub fn all_layers(domain: &crate::domain::Domain, cf: &ConfocalParams) -> Vec<f3
 /// it is an ordinary reachable level in between the critical layers, not a
 /// singularity.
 pub fn layer_label(lam: f32, domain: &crate::domain::Domain, cf: &ConfocalParams) -> &'static str {
+    // Pseudo-integrable table: every special value is a molecule critical
+    // value (or the death cap).  λ = b is only a separatrix when the table
+    // actually touches the focal segment; otherwise it labels through its
+    // molecule transition (an ordinary edge swap on the standard L).
+    if let Some(tab) = Table::from_domain(domain, cf) {
+        if (lam - cf.b).abs() < 1e-4 && crate::pseudo::table_touches_focal(&tab, cf) {
+            return "b (separatrix)";
+        }
+        if let Some(s) = crate::bifurcation::table_singular(&tab, cf, lam) {
+            return s.kind.label();
+        }
+        return "regular";
+    }
+
     if (lam - cf.b).abs() < 1e-4 {
         return "b (separatrix)";
     }
@@ -68,15 +82,6 @@ pub fn layer_label(lam: f32, domain: &crate::domain::Domain, cf: &ConfocalParams
             if (lam - h).abs() < 1e-4 {
                 return "hyperbola wall";
             }
-        }
-    }
-    if let Some(tab) = Table::from_domain(domain, cf) {
-        // Only classify as a transition if this is actually a molecule critical
-        // value; otherwise it is a regular level.
-        let crit = crate::molecule::critical_values(&tab, cf, 1e-6);
-        if crit.iter().any(|&c| (c - lam).abs() < 1e-4) {
-            let tr = crate::molecule::classify_transition(&tab, cf, lam, 1e-4);
-            return tr.kind.label();
         }
     }
     "regular"

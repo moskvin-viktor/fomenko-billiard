@@ -73,6 +73,9 @@ pub enum Manifold {
     FlatSurface {
         trajectories: Vec<Vec<pseudo::FlatPhasePoint>>,
         level: pseudo::Level,
+        /// `Some` at a molecule critical value: the level is the one-sided
+        /// limit and the renderer should pinch/collapse the embedding.
+        singular: Option<crate::bifurcation::SingularInfo>,
     },
     /// Nothing reachable at this level.
     Empty,
@@ -110,11 +113,15 @@ pub fn build_manifold(domain: &Domain, lam: f32, config: &SampleConfig) -> Manif
     match classify(domain, &cf, lam) {
         PhaseManifold::Forbidden => Manifold::Empty,
 
-        PhaseManifold::Flat { level } => {
+        PhaseManifold::Flat { level, singular } => {
             let level = *level;
             match &level {
                 pseudo::Level::Torus { .. } | pseudo::Level::GenusSurface { .. } => {
-                    let starts = crate::dense_caustic_starts(domain, lam, config.per_component);
+                    // At a singular value, sample at the same one-sided λ the
+                    // level was classified at (mirrors the λ_hyp nudge below):
+                    // the exact-critical caustic is tangentially degenerate.
+                    let lam_s = singular.as_ref().map_or(lam, |s| s.side_lam);
+                    let starts = crate::dense_caustic_starts(domain, lam_s, config.per_component);
                     let trajectories = starts
                         .iter()
                         .map(|&(p, v)| {
@@ -131,6 +138,7 @@ pub fn build_manifold(domain: &Domain, lam: f32, config: &SampleConfig) -> Manif
                     Manifold::FlatSurface {
                         trajectories,
                         level,
+                        singular,
                     }
                 }
                 _ => Manifold::Empty,

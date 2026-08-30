@@ -19,6 +19,23 @@ use crate::pseudo::Level;
 use crate::table::Table;
 use crate::torus::ConfocalParams;
 
+/// A singular flat level: which molecule transition it sits at, and the exact
+/// critical value.  Carried alongside the (one-sided-limit) [`Level`] so the
+/// renderer can pinch/collapse the embedding there instead of dropping the
+/// layer.
+#[derive(Clone, Copy, Debug)]
+pub struct SingularInfo {
+    /// The molecule transition at this critical value.
+    pub kind: crate::molecule::TransitionKind,
+    /// The exact critical caustic value.
+    pub lc: f32,
+    /// The λ of the one-sided limit used for classification *and* sampling:
+    /// the side carrying the richer structure (higher genus at a genus jump,
+    /// just-inside at the death cap), a hair off `lc` so exact-critical
+    /// caustics (tangentially degenerate) are never sampled.
+    pub side_lam: f32,
+}
+
 /// The phase manifold at a caustic level `λc`.
 #[derive(Clone, Debug)]
 pub enum PhaseManifold {
@@ -34,8 +51,11 @@ pub enum PhaseManifold {
     },
     /// Pseudo-integrable table (L/T/Z): a flat torus or a genus-≥2 surface.
     Flat {
-        /// The classified flat level.
+        /// The classified flat level (at a singular value: the one-sided limit
+        /// carrying the richer topology, so pinch data is present).
         level: Box<Level>,
+        /// `Some` when λc snapped to a molecule critical value.
+        singular: Option<SingularInfo>,
     },
     /// Nothing reachable at this level.
     Forbidden,
@@ -66,10 +86,16 @@ pub enum DegenerateKind {
 pub fn classify(domain: &Domain, cf: &ConfocalParams, lam: f32) -> PhaseManifold {
     // 1. Pseudo-integrable table.
     if let Some(tab) = Table::from_domain(domain, cf) {
-        return match crate::pseudo::classify_level(lam, &tab, cf, 1e-9, 1e-9) {
+        // Snap to a critical value within tolerance → singular flat level,
+        // classified at the one-sided λ carrying the richer structure.
+        let singular = table_singular(&tab, cf, lam);
+        let lam_c = singular.as_ref().map_or(lam, |s| s.side_lam);
+
+        return match crate::pseudo::classify_level(lam_c, &tab, cf, 1e-9, 1e-9) {
             Level::Forbidden | Level::Separatrix => PhaseManifold::Forbidden,
             level => PhaseManifold::Flat {
                 level: Box::new(level),
+                singular,
             },
         };
     }
@@ -111,10 +137,63 @@ pub fn degenerate_kind(domain: &Domain, cf: &ConfocalParams, lam: f32) -> Option
     None
 }
 
-/// Every bifurcation point of a domain, in one place: the molecule critical
-/// values (from the rectilinear table when the domain is one), the ellipse
-/// wall `λ_ell` (a degenerate layer, possibly at λ = 0), and the two
-/// degeneracies `b` (focal separatrix) and `a` (focal axis).
+/// The singular info at `lam` for a table domain: `Some` iff `lam` snaps
+/// (within 1e-4) to a molecule critical value or the death cap (the outermost
+/// hyperbola wall, where the accessible region empties).
+pub fn table_singular(tab: &Table, cf: &ConfocalParams, lam: f32) -> Option<SingularInfo> {
+    let top = *tab.hyp.last().unwrap();
+    let lc = if (lam - top).abs() < 1e-4 {
+        top
+    } else {
+        crate::molecule::critical_values(tab, cf, 1e-6)
+            .into_iter()
+            .find(|&c| (c - lam).abs() < 1e-4)?
+    };
+    let tr = crate::molecule::classify_transition(tab, cf, lc, 1e-4);
+
+    // The one-sided λ for classification/sampling: the side carrying the
+    // richer structure.  Exact-critical caustics are tangentially degenerate
+    // (they graze a wall or a corner), so we always step a hair off lc.  The
+    // step is tiny because the handle slivers shrink like √(λ−λc): a larger
+    // offset would leave a visible handle at the snapped singular level.
+    let d = 1e-4 * top;
+    use crate::molecule::TransitionKind as K;
+    let side_lam = match tr.kind {
+        // The higher-genus side: the sliver whose depth → 0 at the jump.
+        K::GenusJump => {
+            let below: u32 = tr.from.iter().sum();
+            let above: u32 = tr.to.iter().sum();
+            if above > below {
+                lc + d
+            } else {
+                lc - d
+            }
+        }
+        // The region only exists below the death cap / above the birth.
+        K::DeathA | K::AEnd => lc - d,
+        K::BirthA => lc + d,
+        // Topology identical on both sides — either works; pick above.
+        K::EdgeSwap => lc + d,
+        // Ambiguous (components split/merge) — keep the caller's λ.
+        K::SplitMerge => lam,
+    };
+
+    Some(SingularInfo {
+        kind: tr.kind,
+        lc,
+        side_lam,
+    })
+}
+
+/// Every bifurcation point of a domain, in one place.
+///
+/// - Pseudo-integrable table (L, T, Z, …): the molecule critical values plus
+///   the death cap `hyp_max` (the outermost hyperbola wall, where the region
+///   empties).  `b` is in the molecule list; `a` lies beyond the death cap
+///   (nothing reachable) so it gets no marker.
+/// - Smooth confocal domain: the ellipse wall `λ_ell` (a degenerate layer,
+///   possibly at λ = 0) and the two degeneracies `b` (focal separatrix) and
+///   `a` (focal axis).
 ///
 /// The hyperbola wall `λ_hyp` is *not* listed: it is a regular torus level
 /// (the caustic coincides with the wall but the level keeps full area), so it
@@ -125,19 +204,20 @@ pub fn degenerate_kind(domain: &Domain, cf: &ConfocalParams, lam: f32) -> Option
 pub fn critical_values(domain: &Domain, cf: &ConfocalParams) -> Vec<f32> {
     let mut vals = Vec::new();
 
-    // Molecule critical values from the rectilinear λ-chart table (L, T, Z, …).
     if let Some(tab) = Table::from_domain(domain, cf) {
+        // Molecule critical values from the rectilinear λ-chart table.
         vals.extend(crate::molecule::critical_values(&tab, cf, 1e-6));
+        // The death cap.
+        vals.push(*tab.hyp.last().unwrap());
+    } else {
+        // The ellipse wall (degenerate: the accessible annulus collapses there).
+        if let Some(s) = ConfocalStructure::of_domain(domain) {
+            vals.push(s.lambda_ell);
+        }
+        // The two degeneracies.
+        vals.push(cf.b);
+        vals.push(cf.a);
     }
-
-    // The ellipse wall (degenerate: the accessible annulus collapses there).
-    if let Some(s) = ConfocalStructure::of_domain(domain) {
-        vals.push(s.lambda_ell);
-    }
-
-    // The two degeneracies.
-    vals.push(cf.b);
-    vals.push(cf.a);
 
     vals.retain(|&v| v >= 0.0 && v <= cf.a + 1e-6);
     vals.sort_by(|x, y| x.total_cmp(y));

@@ -50,6 +50,9 @@ struct ViewState {
     flat_boundary: Vec<(crate::pseudo::FlatPhasePoint, bool)>,
     /// The classified level of the current flat view (torus vs genus-2).
     flat_level: Option<crate::pseudo::Level>,
+    /// `Some` when the current flat level sits at a molecule critical value:
+    /// the transition kind and exact λc, driving the singular rendering.
+    flat_singular: Option<crate::bifurcation::SingularInfo>,
     /// At a degenerate critical level, the collapsed phase manifold: closed 1D
     /// curves (one circle per collapsed torus, two touching at the separatrix)
     /// instead of a 3D torus.  Empty on regular levels.
@@ -69,6 +72,7 @@ impl ViewState {
             flat_highlights: Vec::new(),
             flat_boundary: Vec::new(),
             flat_level: None,
+            flat_singular: None,
             curve1d: Vec::new(),
         }
     }
@@ -133,6 +137,7 @@ impl ViewState {
                     crate::manifold::Manifold::FlatSurface {
                         trajectories,
                         level,
+                        singular,
                     } => {
                         self.flat_trajectories = trajectories;
                         // Example trajectories: short (few-bounce) flat traces
@@ -148,6 +153,7 @@ impl ViewState {
                         self.flat_boundary =
                             crate::pseudo::sample_flat_boundary(domain, second_int, &level);
                         self.flat_level = Some(level);
+                        self.flat_singular = singular;
                     }
 
                     // Generic integrable level: dense fill of the 3D Liouville
@@ -210,6 +216,7 @@ impl ViewState {
         self.flat_highlights.clear();
         self.flat_boundary.clear();
         self.flat_level = None;
+        self.flat_singular = None;
         self.curve1d.clear();
     }
 }
@@ -471,19 +478,43 @@ impl App {
                 // scale/offset the regular torus render uses.
                 phase3d::draw_curve1d(&self.view.curve1d, &scale, &self.cam3d, w, h);
             } else if let Some(level) = &self.view.flat_level {
-                crate::pseudo::draw_flat(&self.view.flat_trajectories, level, &self.cam3d, w, h);
+                // Unified morph embedding: geometry from the classified level,
+                // morph state from the current Λ (recomputed per frame, like
+                // the morphed `DomainScale` above), so sweeping Λ pinches the
+                // handle / collapses the tube continuously across the
+                // molecule's critical values.
+                let cf = crate::torus::ConfocalParams::standard();
+                let geo = crate::pseudo::level_geometry(level);
+                let morph = match crate::table::Table::from_domain(&preset.domain, &cf) {
+                    Some(tab) => crate::pseudo::flat_morph(&geo, &tab, &cf, self.second_int),
+                    None => crate::pseudo::FlatMorph {
+                        handle_t: 1.0,
+                        tube_collapse: 1.0,
+                        major_collapse: 1.0,
+                    },
+                };
+                crate::pseudo::draw_flat(
+                    &self.view.flat_trajectories,
+                    &geo,
+                    &morph,
+                    &self.cam3d,
+                    w,
+                    h,
+                );
                 // Example trajectories (red) and boundary preimage (cyan/orange)
                 // on the flat surface, matching the smooth torus view.
                 crate::pseudo::draw_flat_highlights(
                     &self.view.flat_highlights,
-                    level,
+                    &geo,
+                    &morph,
                     &self.cam3d,
                     w,
                     h,
                 );
                 crate::pseudo::draw_flat_boundary(
                     &self.view.flat_boundary,
-                    level,
+                    &geo,
+                    &morph,
                     &self.cam3d,
                     w,
                     h,

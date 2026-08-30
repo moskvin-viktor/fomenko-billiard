@@ -116,16 +116,23 @@ fn hyperbolic_caustic_with_corner_is_genus2() {
 // Degenerate / forbidden
 // ---------------------------------------------------------------------------
 
-/// λc = b is the separatrix (periods diverge), not genus 2.
+/// λc = b on the standard L is a *regular* genus-2 level, not a separatrix:
+/// the table never touches the focal segment (ell max 0.8 < b < 1.4 hyp min),
+/// so the caustic degeneracy happens outside the table and every u-interval
+/// stays a positive distance from b.  `Level::Separatrix` is reserved for
+/// focal-touching tables (see `table_touches_focal`).
 #[test]
-fn separatrix_is_not_genus2() {
-    let (dom, _) = standard_l();
+fn b_on_standard_l_is_regular_genus2() {
+    let (dom, cf) = standard_l();
+    assert!(!billiards::pseudo::table_touches_focal(&table_of(&dom), &cf));
     let level = classify(&dom, 1.0);
-    assert!(
-        matches!(level, Level::Separatrix),
-        "λc=b should be the separatrix, got {:?}",
-        level_kind(&level)
-    );
+    match level {
+        Level::GenusSurface { region, .. } => {
+            assert_eq!(region.genus, vec![2], "λc=b: genus should be 2");
+            assert_eq!(region.n_components, 1);
+        }
+        other => panic!("λc=b should be regular genus-2, got {:?}", level_kind(&other)),
+    }
 }
 
 /// λc ≥ β₃ → nothing accessible.
