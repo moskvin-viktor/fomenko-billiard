@@ -492,7 +492,6 @@ impl App {
                     None => crate::pseudo::FlatMorph {
                         handle_t: 1.0,
                         tube_collapse: 1.0,
-                        major_collapse: 1.0,
                     },
                 };
                 // Cached render-to-texture, same as the smooth torus path

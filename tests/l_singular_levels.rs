@@ -106,8 +106,10 @@ fn markers_include_death_cap_and_exclude_a() {
 }
 
 // ---------------------------------------------------------------------------
-// 3. Band ends: thin tori, collapsed on whichever axis actually vanishes
-//    there (u1/tube at birth, u2/major at death).
+// 3. Band ends: thin tori. The tube collapses at *both* ends (birth and
+//    death alike); the major radius is never scaled, so the hole never
+//    closes (see `pseudo::morph`'s module docs for why an earlier version
+//    that shrank the major radius at death was a real, visible bug).
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -118,7 +120,7 @@ fn band_ends_are_thin_collapsed_tori() {
     let top = *tab.hyp.last().unwrap();
     let config = SampleConfig::default();
 
-    for (lam, tube_should_vanish) in [(1e-4f32, true), (top - 1e-4, false)] {
+    for lam in [1e-4f32, top - 1e-4] {
         let m = build_manifold(&preset.domain, lam, &config);
         let Manifold::FlatSurface { level, .. } = m else {
             panic!("λ={lam}: band end must be a FlatSurface");
@@ -129,19 +131,11 @@ fn band_ends_are_thin_collapsed_tori() {
         );
         let g = level_geometry(&level);
         let mo = flat_morph(&g, &tab, &cf, lam);
-        if tube_should_vanish {
-            assert!(
-                mo.tube_collapse < 0.05,
-                "λ={lam}: tube_collapse={} must vanish at birth",
-                mo.tube_collapse
-            );
-        } else {
-            assert!(
-                mo.major_collapse < 0.05,
-                "λ={lam}: major_collapse={} must vanish at death",
-                mo.major_collapse
-            );
-        }
+        assert!(
+            mo.tube_collapse < 0.05,
+            "λ={lam}: tube_collapse={} must vanish at the band end",
+            mo.tube_collapse
+        );
     }
 }
 

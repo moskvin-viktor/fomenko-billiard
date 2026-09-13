@@ -376,7 +376,6 @@ impl FlatRender {
             geo.u2_extent.to_bits(),
             morph.handle_t.to_bits(),
             morph.tube_collapse.to_bits(),
-            morph.major_collapse.to_bits(),
         ] {
             sample = sample.wrapping_mul(31).wrapping_add(bits);
         }

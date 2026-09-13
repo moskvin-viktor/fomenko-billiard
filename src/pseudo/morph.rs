@@ -18,20 +18,26 @@
 //! the pinch point and the surface *is* the pinched torus, and the transition
 //! is smooth from both sides.
 //!
-//! At the band ends the *main lobe itself* thins — but unlike the smooth
-//! confocal map (whose θ₁ is *always* the collapsing libration by
-//! construction), the flat chart has no such guarantee: `u1` is the
-//! ell-side length and `u2` the hyp-side length, and which one actually
-//! shrinks depends on which wall is being approached.  At birth (λ→0, an
-//! ell-type wall) `u1_extent → 0` — the existing tube convention is right.
-//! At death (λ→hyp_max, the outer hyp-type wall) it is `u2_extent → 0`
-//! instead — the *major* radius must collapse there, not the tube, or the
-//! embedding normalises a near-zero extent up to a full angular sweep and
-//! renders numerically-jittery noise instead of a clean degenerate limit.
-//! `tube_collapse`/`major_collapse` are therefore two independent factors,
-//! each a smoothstep of the distance to its own end, mirroring the
-//! smooth-table morph (`DomainScale::morph_to_level`, WINDOW = 0.35 of the
-//! band).
+//! At the band ends the main lobe's *tube* thins (`tube_collapse`, a
+//! smoothstep of the distance to either end, mirroring the smooth-table morph
+//! `DomainScale::morph_to_level`'s `WINDOW = 0.35`).  The major radius is
+//! **never** touched — this mirrors `DomainScale::morph_to_level` exactly,
+//! which only ever shrinks `r_minor`/`gap` and leaves `r_major` fixed for
+//! every degenerate limit (wall, separatrix, focal axis) regardless of which
+//! one it is.
+//!
+//! An earlier version shrank the major radius instead at "death" (λ→hyp_max,
+//! where `u2_extent → 0`, since `u2` plays the major-angle role here) on the
+//! theory that dividing by a near-zero `u2_extent` would otherwise normalise
+//! up to numerically-jittery noise. That noise never actually materialized —
+//! `u1`/`u2` are computed from the same f32 source and stay well-conditioned
+//! down to extents ~1e-2 — while shrinking the major radius did cause a real,
+//! visible bug: once `r_major` dropped below `r` (tube), the ring torus
+//! flipped into a self-intersecting spindle and the donut hole visibly
+//! closed, well before the level was anywhere near singular (the window is a
+//! coarse proxy on raw λ, not on the level's own shrinking extent). Fixing
+//! the tube only, with the major radius structurally fixed at `R_MAJOR`,
+//! makes that inversion impossible by construction.
 
 use super::geometry::LevelGeometry;
 use crate::table::Table;
@@ -58,17 +64,23 @@ pub struct FlatMorph {
     /// Handle size ∈ [0, 1]: 0 at a genus jump (handle collapsed onto the
     /// pinch point), 1 mid-band (full genus-2 handle).
     pub handle_t: f32,
-    /// Main-lobe tube (minor) radius factor ∈ [0, 1]: 0 at birth (λ→0, where
-    /// `u1_extent` vanishes), 1 elsewhere.
+    /// Main-lobe tube (minor) radius factor ∈ [0, 1]: 0 at either band end
+    /// (λ→0 or λ→hyp_max), 1 mid-band. The major radius is never scaled (see
+    /// the module docs) so the hole can never close.
     pub tube_collapse: f32,
-    /// Main-lobe major radius factor ∈ [0, 1]: 0 at death (λ→hyp_max, where
-    /// `u2_extent` vanishes), 1 elsewhere.
-    pub major_collapse: f32,
 }
 
 fn smoothstep(x: f32) -> f32 {
     let x = x.clamp(0.0, 1.0);
     x * x * (3.0 - 2.0 * x)
+}
+
+/// The main lobe's actual (tube, major) radii. `r_major` is always the fixed
+/// `R_MAJOR` — see the module docs for why it must never be scaled — so
+/// `r_major > R_MINOR >= r` unconditionally and the ring can never invert
+/// into a self-intersecting spindle.
+fn main_lobe_radii(m: &FlatMorph) -> (f32, f32) {
+    (R_MINOR * m.tube_collapse, R_MAJOR)
 }
 
 /// The morph state at level `lam` of a table.
@@ -87,13 +99,16 @@ pub fn flat_morph(geo: &LevelGeometry, tab: &Table, _cf: &ConfocalParams, lam: f
         smoothstep(r1.min(r2))
     };
 
-    let tube_collapse = smoothstep(lam.max(0.0) / (COLLAPSE_WINDOW * top));
-    let major_collapse = smoothstep((top - lam).max(0.0) / (COLLAPSE_WINDOW * top));
+    // Thin the tube near *either* band end (birth at 0, death at hyp_max);
+    // the major radius is fixed (see the module docs), so this only ever
+    // makes the ring thinner, never inverts it.
+    let birth = smoothstep(lam.max(0.0) / (COLLAPSE_WINDOW * top));
+    let death = smoothstep((top - lam).max(0.0) / (COLLAPSE_WINDOW * top));
+    let tube_collapse = birth * death;
 
     FlatMorph {
         handle_t,
         tube_collapse,
-        major_collapse,
     }
 }
 
@@ -125,8 +140,7 @@ pub fn unified_with_normal(
     let lu2 = (u2 - g.origin.1).clamp(0.0, g.u2_extent.max(0.0));
     let lsplit = (g.split - g.origin.0).max(1e-6);
     let h2 = g.u2_extent.max(1e-6);
-    let r = R_MINOR * m.tube_collapse;
-    let r_major = R_MAJOR * m.major_collapse;
+    let (r, r_major) = main_lobe_radii(m);
 
     if lu1 <= lsplit + 1e-6 || g.d1 <= 0.0 || g.d2 <= 0.0 {
         // Main lobe: donut, u1→tube, u2→major.
@@ -158,7 +172,7 @@ pub fn unified_with_normal(
     let pinch = (r_major + r) * e_r;
 
     let loop_r = HANDLE_LOOP * m.handle_t;
-    let tube_r = HANDLE_TUBE * m.handle_t * m.tube_collapse.min(m.major_collapse).max(0.05);
+    let tube_r = HANDLE_TUBE * m.handle_t * m.tube_collapse.max(0.05);
 
     // Center loop through P: circle of radius loop_r around P + loop_r·e_r,
     // in the (e_r, e_z) plane; ψ = 0 at P.
@@ -183,8 +197,7 @@ pub fn pinch_point_3d(g: &LevelGeometry, m: &FlatMorph) -> Option<Vec3> {
     }
     let a_lo = g.attach.0 - g.origin.1;
     let tm = std::f32::consts::PI * (a_lo + 0.5 * g.d2) / g.u2_extent.max(1e-6);
-    let r = R_MINOR * m.tube_collapse;
-    let r_major = R_MAJOR * m.major_collapse;
+    let (r, r_major) = main_lobe_radii(m);
     Some(vec3(
         (r_major + r) * tm.cos(),
         (r_major + r) * tm.sin(),
@@ -235,8 +248,9 @@ mod tests {
         assert!(m_mid.handle_t > 0.9, "mid: handle_t = {}", m_mid.handle_t);
     }
 
-    /// tube_collapse vanishes at birth (u1 vanishes there), major_collapse
-    /// vanishes at death (u2 vanishes there); both saturate mid-band.
+    /// tube_collapse vanishes at *both* band ends (birth and death alike) and
+    /// saturates mid-band. The major radius is never scaled — checked
+    /// separately by `test_main_lobe_hole_never_closes`.
     #[test]
     fn test_collapse_profile() {
         let (_, m0) = morph_at(0.01);
@@ -248,11 +262,11 @@ mod tests {
             m0.tube_collapse
         );
         assert!(
-            m1.major_collapse < 0.05,
-            "death: major_collapse = {}",
-            m1.major_collapse
+            m1.tube_collapse < 0.05,
+            "death: tube_collapse = {}",
+            m1.tube_collapse
         );
-        assert!(mm.tube_collapse > 0.95 && mm.major_collapse > 0.95, "mid");
+        assert!(mm.tube_collapse > 0.95, "mid: tube_collapse = {}", mm.tube_collapse);
     }
 
     /// At handle_t → 0 every handle point sits at the pinch point.
@@ -272,6 +286,30 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    /// Regression: the main lobe's major radius must never drop below its
+    /// tube radius anywhere in the table's λ range — that inverts the ring
+    /// torus into a self-intersecting spindle and the donut hole visibly
+    /// closes (the reported bug). `main_lobe_radii` now makes this
+    /// structurally impossible (`r_major` is the fixed `R_MAJOR`, never
+    /// scaled), so this just guards the invariant going forward.
+    #[test]
+    fn test_main_lobe_hole_never_closes() {
+        let tab = standard_l_table();
+        let top = *tab.hyp.last().unwrap();
+        let mut lam = 1e-3f32;
+        while lam < top {
+            let level = classify_level(lam, &tab, &cf(), 1e-9, 1e-9);
+            let geo = level_geometry(&level);
+            let m = flat_morph(&geo, &tab, &cf(), lam);
+            let (r, r_major) = main_lobe_radii(&m);
+            assert!(
+                r_major >= r,
+                "λ={lam}: r_major={r_major} < r={r} — donut hole closed"
+            );
+            lam += 0.01;
         }
     }
 
