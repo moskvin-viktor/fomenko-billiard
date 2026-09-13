@@ -13,6 +13,7 @@ use super::classify::Level;
 use super::geometry::LevelGeometry;
 use super::map::to_flat;
 use super::morph::{pinch_point_3d, unified_with_normal, FlatMorph};
+use crate::cached_render::CachedSurfaceRender;
 use crate::torus::{ConfocalParams, PhaseSample};
 use macroquad::prelude::*;
 
@@ -307,6 +308,106 @@ pub fn draw_flat_boundary(
             (70, 210, 255)
         };
         draw_circle(s.x, s.y, 3.0, color_u8!(r, g, b, (alpha * 255.0) as u8));
+    }
+}
+
+/// Cached render-to-texture wrapper around [`draw_flat`]/[`draw_flat_boundary`],
+/// on the same [`CachedSurfaceRender`] the smooth-torus path uses
+/// (`torus_render::TorusRender`).  Before this, `draw_flat` was called
+/// directly every frame regardless of camera motion; the smooth path's
+/// "orbit freeze" fix (`docs/known_issues.md` #1) never covered the L-shape
+/// view.  This gives the two paths identical caching: rasterize only when the
+/// camera moved or the level's geometry/morph state changed, otherwise blit.
+pub struct FlatRender {
+    cache: CachedSurfaceRender,
+}
+
+/// Everything [`FlatRender::draw`] needs apart from the trajectories
+/// themselves: the camera, window size, and the level's geometry/morph state.
+/// Bundled for the same reason as `torus_render::DrawContext` — so the draw
+/// call stays small despite the two paths needing the same shape of inputs.
+pub struct FlatDrawContext<'a> {
+    pub cam: &'a crate::phase3d::OrbitCamera3,
+    pub win_w: f32,
+    pub win_h: f32,
+    pub geo: &'a LevelGeometry,
+    pub morph: &'a FlatMorph,
+}
+
+impl FlatRender {
+    pub fn new() -> Self {
+        Self {
+            cache: CachedSurfaceRender::new(),
+        }
+    }
+
+    /// Access the cached offscreen texture (for tests / diagnostics).
+    pub fn texture(&self) -> Option<&Texture2D> {
+        self.cache.texture()
+    }
+
+    /// A cheap fingerprint of the flat geometry: point/line counts, a content
+    /// sample, and the level's intrinsic geometry + morph state (both change
+    /// with the caustic level `λc`, so a level sweep must re-rasterize even
+    /// though the point cloud's raw `(u1,u2)` values don't move).
+    fn geometry_key(
+        trajectories: &[Vec<FlatPhasePoint>],
+        boundary: &[(FlatPhasePoint, bool)],
+        geo: &LevelGeometry,
+        morph: &FlatMorph,
+    ) -> (usize, usize, u32) {
+        let n_trajs = trajectories.len();
+        let n_pts: usize = trajectories.iter().map(|t| t.len()).sum::<usize>() + boundary.len();
+        let mut sample = 0u32;
+        for t in trajectories.iter().take(4) {
+            if let Some(p) = t.first() {
+                sample = sample
+                    .wrapping_mul(31)
+                    .wrapping_add(p.u1.to_bits() ^ p.u2.to_bits());
+            }
+        }
+        for bits in [
+            geo.origin.0.to_bits(),
+            geo.origin.1.to_bits(),
+            geo.split.to_bits(),
+            geo.d1.to_bits(),
+            geo.d2.to_bits(),
+            geo.u1_extent.to_bits(),
+            geo.u2_extent.to_bits(),
+            morph.handle_t.to_bits(),
+            morph.tube_collapse.to_bits(),
+            morph.major_collapse.to_bits(),
+        ] {
+            sample = sample.wrapping_mul(31).wrapping_add(bits);
+        }
+        (n_trajs, n_pts, sample)
+    }
+
+    /// Draw the flat surface, re-rasterizing into the offscreen target only
+    /// when the camera or geometry/morph state changed; otherwise blit the
+    /// cached texture.  Highlights are drawn uncached on top every frame
+    /// (cheap — a handful of short traces), mirroring
+    /// `TorusRender::draw_scaled`'s treatment of `draw_torus_highlights_scaled`.
+    pub fn draw(
+        &mut self,
+        trajectories: &[Vec<FlatPhasePoint>],
+        highlights: &[Vec<FlatPhasePoint>],
+        boundary: &[(FlatPhasePoint, bool)],
+        ctx: &FlatDrawContext,
+    ) {
+        let geom_key = Self::geometry_key(trajectories, boundary, ctx.geo, ctx.morph);
+        self.cache
+            .draw(ctx.cam.state_key(), ctx.win_w, ctx.win_h, geom_key, || {
+                draw_flat(trajectories, ctx.geo, ctx.morph, ctx.cam, ctx.win_w, ctx.win_h);
+                draw_flat_boundary(boundary, ctx.geo, ctx.morph, ctx.cam, ctx.win_w, ctx.win_h);
+            });
+        draw_flat_highlights(highlights, ctx.geo, ctx.morph, ctx.cam, ctx.win_w, ctx.win_h);
+    }
+}
+
+impl Default for FlatRender {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

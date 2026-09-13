@@ -5,20 +5,22 @@
 //! even though the torus is static.  The fix is **render-to-texture**: rasterize
 //! the torus into an offscreen `RenderTarget` only when the camera (Euler
 //! angles) or the torus geometry changes, then blit that texture each frame.
+//! The cache mechanics live in [`crate::cached_render::CachedSurfaceRender`]
+//! (shared with the L-shape's `pseudo::view::FlatRender`); this module only
+//! supplies the torus-specific geometry fingerprint and the rasterize closure.
 //!
 //! The camera is a separate concern (Euler angles in `OrbitCamera3`); here we
 //! only decide *when* to re-rasterize and do the cheap blit.
 
+use crate::cached_render::CachedSurfaceRender;
 use crate::phase3d::{
     draw_phase_points_scaled, draw_phase_trajectories_scaled, OrbitCamera3, PhasePoint,
 };
 use macroquad::prelude::*;
 
-/// A cheap fingerprint of the camera state, used to detect when the cached
-/// torus render must be regenerated (orbit/zoom changed).
-pub fn camera_moved(a: (f32, f32, f32), b: (f32, f32, f32), eps: f32) -> bool {
-    (a.0 - b.0).abs() > eps || (a.1 - b.1).abs() > eps || (a.2 - b.2).abs() > eps
-}
+/// A cheap fingerprint of the camera state, used to detect when a cached
+/// render must be regenerated (orbit/zoom changed).
+pub use crate::cached_render::camera_moved;
 
 /// Radial extent assigned to the torus renderer, derived from the size of the
 /// billiard domain.  Each torus lobe is centred on the origin and scaled to
@@ -121,25 +123,16 @@ impl Default for DomainScale {
     }
 }
 
-/// A scratch offscreen state structure for the torus point cloud.
+/// A scratch offscreen state structure for the torus point cloud, wrapping
+/// the shared [`CachedSurfaceRender`] with torus-specific fingerprinting.
 pub struct TorusRender {
-    /// Offscreen target we rasterize the torus into.
-    target: Option<RenderTarget>,
-    /// Camera state the current texture was rendered with.
-    camera_key: (f32, f32, f32),
-    /// Window size the texture was rendered at.
-    size: (u32, u32),
-    /// Fingerprint of the geometry the texture was rendered with.
-    geom_key: (usize, usize, u32),
+    cache: CachedSurfaceRender,
 }
 
 impl TorusRender {
     pub fn new() -> Self {
         Self {
-            target: None,
-            camera_key: (f32::NAN, f32::NAN, f32::NAN),
-            size: (0, 0),
-            geom_key: (usize::MAX, usize::MAX, u32::MAX),
+            cache: CachedSurfaceRender::new(),
         }
     }
 
@@ -171,7 +164,7 @@ impl TorusRender {
 
     /// Access the cached offscreen texture (for tests / diagnostics).
     pub fn texture(&self) -> Option<&Texture2D> {
-        self.target.as_ref().map(|t| &t.texture)
+        self.cache.texture()
     }
 
     /// Draw the torus, re-rasterizing into the offscreen target only when the
@@ -204,46 +197,29 @@ impl TorusRender {
         boundary: &[(PhasePoint, bool)],
         ctx: &DrawContext,
     ) {
-        let size = (ctx.win_w as u32, ctx.win_h as u32);
-        let cam_key = ctx.cam.state_key();
         let geom_key = Self::geometry_key(trajectories, ctx.scale);
-
-        // Recreate the target if the window resized.
-        if self.target.is_none() || self.size != size {
-            self.target = Some(render_target(size.0, size.1));
-            self.size = size;
-            self.camera_key = (f32::NAN, f32::NAN, f32::NAN);
-            self.geom_key = (usize::MAX, usize::MAX, u32::MAX);
-        }
-
-        // Re-rasterize only when the camera actually moved (past a jitter
-        // threshold) or the geometry changed.  Sub-pixel drag would otherwise
-        // trigger a full ~150K-point re-draw every frame, which is the
-        // profiled orbit freeze.
-        const CAM_EPS: f32 = 1e-4;
-        let cam_changed = crate::torus_render::camera_moved(cam_key, self.camera_key, CAM_EPS);
-        let needs_raster = cam_changed || geom_key != self.geom_key;
-
-        if needs_raster {
-            self.rasterize(trajectories, boundary, ctx);
-            self.camera_key = cam_key;
-            self.geom_key = geom_key;
-        }
-
-        // Blit the cached texture to the screen.
-        if let Some(target) = &self.target {
-            draw_texture_ex(
-                &target.texture,
-                0.0,
-                0.0,
-                WHITE,
-                DrawTextureParams {
-                    dest_size: Some(vec2(ctx.win_w, ctx.win_h)),
-                    flip_y: true, // render targets are Y-flipped in macroquad
-                    ..Default::default()
-                },
-            );
-        }
+        self.cache.draw(
+            ctx.cam.state_key(),
+            ctx.win_w,
+            ctx.win_h,
+            geom_key,
+            || {
+                // The torus is drawn in screen space (projected by the orbit
+                // camera), so we reuse the existing point/line drawing into
+                // the target.
+                draw_phase_points_scaled(trajectories, ctx.cam, ctx.win_w, ctx.win_h, ctx.scale);
+                draw_phase_trajectories_scaled(
+                    trajectories,
+                    ctx.cam,
+                    ctx.win_w,
+                    ctx.win_h,
+                    ctx.scale,
+                );
+                crate::phase3d::draw_boundary_preimage(
+                    boundary, ctx.scale, ctx.cam, ctx.win_w, ctx.win_h,
+                );
+            },
+        );
 
         // Bold red short trajectories on the torus surface, one per torus,
         // drawn on top of the cached texture each frame (cheap).
@@ -251,41 +227,10 @@ impl TorusRender {
             highlights, ctx.cam, ctx.win_w, ctx.win_h, ctx.scale,
         );
     }
+}
 
-    /// Rasterize the torus into the offscreen target.
-    fn rasterize(
-        &self,
-        trajectories: &[Vec<PhasePoint>],
-        boundary: &[(PhasePoint, bool)],
-        ctx: &DrawContext,
-    ) {
-        let target = self.target.as_ref().expect("render target exists");
-        let size = self.size;
-        let (tw, th) = (size.0.max(1) as f32, size.1.max(1) as f32);
-
-        // `cam.project` emits screen-pixel coordinates (origin top-left, y
-        // down), i.e. `p.x ∈ [0, win_w]`, `p.y ∈ [0, win_h]`.  A plain
-        // `Camera2D` on a render target uses the identity matrix (NDC), so
-        // pixel coordinates would land off-target.  Instead map pixel space
-        // onto the target: NDC_x = 2·x/tw − 1, NDC_y = −2·y/th + 1, which the
-        // `Camera2D` zoom+offset reproduce exactly (the − on y restores y-down;
-        // blitting with `flip_y` presents it upright).
-        let cam2d = Camera2D {
-            render_target: Some(target.clone()),
-            zoom: vec2(2.0 / tw, -2.0 / th),
-            offset: vec2(-1.0, 1.0),
-            ..Default::default()
-        };
-        set_camera(&cam2d);
-
-        clear_background(Color::new(0.0, 0.0, 0.0, 0.0));
-
-        // The torus is drawn in screen space (projected by the orbit camera),
-        // so we reuse the existing point/line drawing into the target.
-        draw_phase_points_scaled(trajectories, ctx.cam, ctx.win_w, ctx.win_h, ctx.scale);
-        draw_phase_trajectories_scaled(trajectories, ctx.cam, ctx.win_w, ctx.win_h, ctx.scale);
-        crate::phase3d::draw_boundary_preimage(boundary, ctx.scale, ctx.cam, ctx.win_w, ctx.win_h);
-
-        set_default_camera();
+impl Default for TorusRender {
+    fn default() -> Self {
+        Self::new()
     }
 }

@@ -33,5 +33,5 @@ pub use render::{
 pub use ulength::{RootSide, ULength};
 pub use view::{
     draw_flat, draw_flat_boundary, draw_flat_highlights, sample_flat_boundary,
-    sample_flat_trajectory, FlatPhasePoint,
+    sample_flat_trajectory, FlatDrawContext, FlatPhasePoint, FlatRender,
 };

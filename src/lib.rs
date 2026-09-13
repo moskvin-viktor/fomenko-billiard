@@ -1,5 +1,6 @@
 pub mod app;
 pub mod bifurcation;
+pub mod cached_render;
 pub mod confocal;
 pub mod domain;
 pub mod manifold;

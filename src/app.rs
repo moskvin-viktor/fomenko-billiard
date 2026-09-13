@@ -238,6 +238,7 @@ pub struct App {
     cam3d: phase3d::OrbitCamera3,
     view: ViewState,
     torus_render: crate::torus_render::TorusRender,
+    flat_render: crate::pseudo::FlatRender,
     burn_frames: Option<u32>,
     show_molecule: bool,
     markers: Vec<crate::molecule_view::LayerMarker>,
@@ -263,6 +264,7 @@ impl App {
             cam3d: phase3d::OrbitCamera3::new(),
             view: ViewState::empty(),
             torus_render: crate::torus_render::TorusRender::new(),
+            flat_render: crate::pseudo::FlatRender::new(),
             burn_frames: None,
             show_molecule: true,
             markers: Vec::new(),
@@ -493,31 +495,22 @@ impl App {
                         major_collapse: 1.0,
                     },
                 };
-                crate::pseudo::draw_flat(
+                // Cached render-to-texture, same as the smooth torus path
+                // (`TorusRender`): re-rasterizes only on camera move or
+                // geometry/morph change, otherwise blits.  Highlights (red
+                // example trajectories) are drawn uncached on top each frame.
+                let flat_ctx = crate::pseudo::FlatDrawContext {
+                    cam: &self.cam3d,
+                    win_w: w,
+                    win_h: h,
+                    geo: &geo,
+                    morph: &morph,
+                };
+                self.flat_render.draw(
                     &self.view.flat_trajectories,
-                    &geo,
-                    &morph,
-                    &self.cam3d,
-                    w,
-                    h,
-                );
-                // Example trajectories (red) and boundary preimage (cyan/orange)
-                // on the flat surface, matching the smooth torus view.
-                crate::pseudo::draw_flat_highlights(
                     &self.view.flat_highlights,
-                    &geo,
-                    &morph,
-                    &self.cam3d,
-                    w,
-                    h,
-                );
-                crate::pseudo::draw_flat_boundary(
                     &self.view.flat_boundary,
-                    &geo,
-                    &morph,
-                    &self.cam3d,
-                    w,
-                    h,
+                    &flat_ctx,
                 );
             } else {
                 // Dense points fill the 2D Liouville torus surface.  Rasterized
