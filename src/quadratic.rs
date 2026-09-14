@@ -55,6 +55,19 @@ impl ConfocalQuadric {
 
     /// Smallest positive t where ray p + t·dir hits Q = 0.
     pub fn intersect(&self, p: Vec2, dir: Vec2) -> Option<f32> {
+        let (t1, t2) = self.intersect_roots(p, dir);
+        t1.or(t2)
+    }
+
+    /// Both forward (`t > 0`) roots where ray `p + t·dir` hits `Q = 0`, in
+    /// ascending order. A ray through a full closed quadric (e.g. the single
+    /// ellipse `confocal_ellipse` splits into 4 quadrant arcs) crosses the
+    /// *same* underlying curve twice; `intersect` only ever returns the
+    /// nearer one, which is right for billiard tracing (the ball is always
+    /// inside, so the near wall is the physical hit) but wrong for
+    /// ray-casting containment tests, which need every crossing to get
+    /// parity right.
+    pub fn intersect_roots(&self, p: Vec2, dir: Vec2) -> (Option<f32>, Option<f32>) {
         let a = self.a_param;
         let b = self.b_param;
         let lam = self.lambda;
@@ -65,38 +78,28 @@ impl ConfocalQuadric {
         let qb = 2.0 * (bx * p.x * dir.x + ay * p.y * dir.y);
         let qc = bx * p.x * p.x + ay * p.y * p.y - ay * bx;
 
+        let eps = 1e-6;
         if qa.abs() < 1e-12 {
             if qb.abs() < 1e-12 {
-                return None;
+                return (None, None);
             }
             let t = -qc / qb;
-            return if t > 1e-6 { Some(t) } else { None };
+            return if t > eps { (Some(t), None) } else { (None, None) };
         }
 
         let disc = qb * qb - 4.0 * qa * qc;
         if disc < 0.0 {
-            return None;
+            return (None, None);
         }
-        // `qa < 0` for a hyperbola (the `b − λ`, `a − λ` coefficients are of
-        // opposite sign), which flips which of t1/t2 is the nearer wall.  The
-        // billiard always hits the nearest positive root (`t` is the travel
-        // distance), so take the smaller, not the algebraically first.
         let sd = disc.sqrt();
         let mut t1 = (-qb - sd) / (2.0 * qa);
         let mut t2 = (-qb + sd) / (2.0 * qa);
         if t1 > t2 {
             std::mem::swap(&mut t1, &mut t2);
         }
-
-        let eps = 1e-6;
-        let t = if t1 > eps {
-            t1
-        } else if t2 > eps {
-            t2
-        } else {
-            return None;
-        };
-        Some(t)
+        let r1 = if t1 > eps { Some(t1) } else { None };
+        let r2 = if t2 > eps { Some(t2) } else { None };
+        (r1, r2)
     }
 
     /// Centre of the quadric (∇Q = 0).

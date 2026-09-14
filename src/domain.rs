@@ -38,6 +38,31 @@ impl Segment {
         }
     }
 
+    /// Count how many times the ray `p + t·dir` (`t > 0`) crosses this
+    /// segment. Used by `Domain::contains`'s parity test, which — unlike
+    /// billiard tracing — needs *every* crossing, not just the nearest: a
+    /// ray through a domain wall built from a single closed quadric (e.g.
+    /// `confocal_ellipse`'s 4 quadrant arcs sharing one curve) can cross that
+    /// curve twice, and `Segment::intersect` only ever surfaces the nearer
+    /// root.
+    fn count_ray_crossings(&self, p: Vec2, dir: Vec2) -> usize {
+        match self {
+            Segment::Line { .. } => usize::from(
+                self.intersect(p, dir)
+                    .map(|(t, _, _)| t > 1e-8)
+                    .unwrap_or(false),
+            ),
+            Segment::Quad { curve, a, b } => {
+                let (r1, r2) = curve.intersect_roots(p, dir);
+                [r1, r2]
+                    .into_iter()
+                    .flatten()
+                    .filter(|&t| t > 1e-8 && on_arc(p + dir * t, *a, *b, curve))
+                    .count()
+            }
+        }
+    }
+
     /// Intersect ray `p + t.dir` with the segment.
     /// Returns `(t, hit, s)` where s is normalised position along the segment.
     pub fn intersect(&self, p: Vec2, dir: Vec2) -> Option<(f32, Vec2, f32)> {
@@ -76,6 +101,27 @@ fn between(x: f32, a: f32, b: f32) -> bool {
     x >= lo - 1e-4 && x <= hi + 1e-4
 }
 
+/// Shift `theta` by a multiple of `2π` so it lies within `π` of `reference`.
+///
+/// `atan2` only returns the principal range `(-π, π]`, so a conic-angle arc
+/// that crosses the branch cut (e.g. a quadrant-III arc of a full ellipse,
+/// which runs from `θ=π` down through `θ=-π` to `θ=-π/2`) reads as
+/// non-monotonic if the raw `atan2` values are compared directly. Unwrapping
+/// every angle to the branch nearest its arc's start point restores
+/// monotonicity for any arc under half a turn (true of every quadric arc used
+/// in this crate).
+fn unwrap_near(theta: f32, reference: f32) -> f32 {
+    let two_pi = std::f32::consts::TAU;
+    let mut t = theta;
+    while t - reference > std::f32::consts::PI {
+        t -= two_pi;
+    }
+    while t - reference < -std::f32::consts::PI {
+        t += two_pi;
+    }
+    t
+}
+
 /// Whether `hit` lies on the quadric arc from `a` to `b`, insensitive to the
 /// polar angle from the origin.
 ///
@@ -92,16 +138,22 @@ fn on_arc(hit: Vec2, a: Vec2, b: Vec2, curve: &ConfocalQuadric) -> bool {
         // Same branch, then y monotone along the branch.
         return curve.branch_sign(hit) == curve.branch_sign(a) && between(hit.y, a.y, b.y);
     }
-    // Ellipse: conic angle θ.  `x = √(a−λ) cos θ, y = √(b−λ) sin θ`.  Within
-    // a single quadrant θ is monotonic along the arc, so a plain range test is
-    // exact.  (The polar angle from the origin is NOT an affine function of θ,
-    // which is why the old origin-angle test misread in-quadrant arcs.)
+    // Ellipse: conic angle θ.  `x = √(a−λ) cos θ, y = √(b−λ) sin θ`.  θ is
+    // monotonic along any arc under half a turn, so a plain range test is
+    // exact — but `atan2` only returns `(-π, π]`, so an arc crossing that
+    // branch cut (e.g. a quadrant-III arc of a full ellipse) needs `b`/`hit`
+    // unwrapped onto `a`'s branch first (`unwrap_near`) before comparing.
+    // (The polar angle from the origin is NOT an affine function of θ, which
+    // is why the old origin-angle test misread in-quadrant arcs.)
     let theta = |p: Vec2| {
         let ca = (curve.a_param - curve.lambda).max(1e-30).sqrt();
         let cb = (curve.b_param - curve.lambda).max(1e-30).sqrt();
         (p.y / cb).atan2(p.x / ca)
     };
-    between(theta(hit), theta(a), theta(b))
+    let ta = theta(a);
+    let tb = unwrap_near(theta(b), ta);
+    let th = unwrap_near(theta(hit), ta);
+    between(th, ta, tb)
 }
 
 /// Normalised position `s ∈ [0, 1]` along the arc `a → b`.
@@ -120,11 +172,13 @@ fn arc_frac(hit: Vec2, a: Vec2, b: Vec2, curve: &ConfocalQuadric) -> f32 {
             let cb = (curve.b_param - curve.lambda).max(1e-30).sqrt();
             (p.y / cb).atan2(p.x / ca)
         };
-        let (ta, tb) = (theta(a), theta(b));
+        let ta = theta(a);
+        let tb = unwrap_near(theta(b), ta);
+        let th = unwrap_near(theta(hit), ta);
         if (ta - tb).abs() < 1e-9 {
             0.5
         } else {
-            ((theta(hit) - ta) / (tb - ta)).clamp(0.0, 1.0)
+            ((th - ta) / (tb - ta)).clamp(0.0, 1.0)
         }
     }
 }
@@ -164,11 +218,7 @@ impl Domain {
         ] {
             let mut crossings = 0;
             for seg in &self.segments {
-                if let Some((t, _, _)) = seg.intersect(point, ray_dir) {
-                    if t > 1e-8 {
-                        crossings += 1;
-                    }
-                }
+                crossings += seg.count_ray_crossings(point, ray_dir);
             }
             if crossings % 2 == 1 {
                 return true;
@@ -295,7 +345,8 @@ fn sample_quadric_arc(curve: &ConfocalQuadric, a: Vec2, b: Vec2, n: usize) -> Ve
         // Ellipse: conic angle θ.
         let cb = (curve.b_param - lam).max(1e-30);
         let theta = |p: Vec2| (p.y / cb.sqrt()).atan2(p.x / ca.sqrt());
-        let (t0, t1) = (theta(a), theta(b));
+        let t0 = theta(a);
+        let t1 = unwrap_near(theta(b), t0);
         let steps = n.max(3);
         let mut pts = Vec::with_capacity(steps + 1);
         for i in 0..=steps {
