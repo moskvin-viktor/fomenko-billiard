@@ -34,30 +34,19 @@ const MAX_STRETCH_RATIO: f32 = 100.0;
 
 /// Whether the straight line between two temporally-adjacent trajectory
 /// samples' embedded positions would be a rendering artifact rather than a
-/// real traced path — either because it crosses the main-lobe/handle seam
-/// (a genuine discontinuity in [`unified_with_normal`]'s current embedding:
-/// the handle's cross-section at the split line is a small loop around one
-/// fixed pinch point, not the full arc the main lobe's boundary sweeps over
-/// the same attach band — so the two sides only coincide at isolated points),
-/// or because the embedded jump is wildly disproportionate to how far the
-/// samples actually moved in the flat chart (see [`MAX_STRETCH_RATIO`]).
-fn is_seam(a: &FlatPhasePoint, b: &FlatPhasePoint, pa: Vec3, pb: Vec3, geo: &LevelGeometry) -> bool {
-    if main_lobe_branch(a.u1, geo) != main_lobe_branch(b.u1, geo) {
-        return true;
-    }
+/// real traced path: the embedded jump is wildly disproportionate to how far
+/// the samples actually moved in the flat chart (see [`MAX_STRETCH_RATIO`]).
+///
+/// This used to also force a seam on every main-lobe/handle crossing, because
+/// [`unified_with_normal`] collapsed the whole attach band onto a single
+/// pinch point there, so a crossing step could produce an arbitrarily large,
+/// spurious jump. That embedding bug is fixed (the handle now attaches along
+/// the actual attach curve, matching the main lobe exactly at the seam), so a
+/// legitimate crossing step is small like any other and the ratio test alone
+/// catches genuine artifacts.
+fn is_seam(a: &FlatPhasePoint, b: &FlatPhasePoint, pa: Vec3, pb: Vec3, _geo: &LevelGeometry) -> bool {
     let raw = ((a.u1 - b.u1).powi(2) + (a.u2 - b.u2).powi(2)).sqrt();
     (pa - pb).length() > MAX_STRETCH_RATIO * raw.max(1e-6)
-}
-
-/// Which branch of [`unified_with_normal`] a raw `u1` falls on — mirrors its
-/// own branch test exactly (`d1`/`d2` absent ⇒ a torus level, main lobe only).
-fn main_lobe_branch(u1: f32, geo: &LevelGeometry) -> bool {
-    if geo.d1 <= 0.0 || geo.d2 <= 0.0 {
-        return true;
-    }
-    let lu1 = (u1 - geo.origin.0).clamp(0.0, geo.u1_extent.max(0.0));
-    let lsplit = (geo.split - geo.origin.0).max(1e-6);
-    lu1 <= lsplit + 1e-6
 }
 
 /// A phase-space point mapped into flat coordinates for rendering.
@@ -559,7 +548,7 @@ mod tests {
         // level: raw Δu ≈ 0.076 in each axis, comfortably inside the spine.
         let a = pt(0.0000, 1.0652, 1, 1);
         let b = pt(0.0756, 1.1408, 1, 1);
-        assert!(main_lobe_branch(a.u1, &geo) && main_lobe_branch(b.u1, &geo));
+        assert!(a.u1 <= geo.split && b.u1 <= geo.split, "fixture should stay on the main lobe");
         let (pa, _) = unified_with_normal(a.u1, a.u2, a.sheet.0, a.sheet.1, &geo, &morph);
         let (pb, _) = unified_with_normal(b.u1, b.u2, b.sheet.0, b.sheet.1, &geo, &morph);
         assert!(
@@ -568,13 +557,14 @@ mod tests {
         );
     }
 
-    /// A step that crosses the main-lobe/handle split must always flag as a
-    /// seam, regardless of how small the embedded jump happens to be — the
-    /// handle's cross-section at the split doesn't match the main lobe's
-    /// boundary arc (see `is_seam`'s docs), so the two sides can coincide by
-    /// chance without genuinely tracing the same path.
+    /// A tiny step that crosses the main-lobe/handle split must NOT flag as a
+    /// seam, at any `u2` in the attach band — not just its midpoint. This is
+    /// the regression for the fixed embedding bug: `unified_with_normal` now
+    /// matches the main lobe's boundary value exactly at the split, for every
+    /// `u2`, so a physically tiny step across it produces a physically tiny
+    /// embedded jump, same as anywhere else.
     #[test]
-    fn test_branch_crossing_is_always_a_seam() {
+    fn test_branch_crossing_is_no_longer_always_a_seam() {
         let tab = standard_l_table();
         let lam = 1.2f32;
         let level = classify_level(lam, &tab, &cf(), 1e-9, 1e-9);
@@ -583,17 +573,18 @@ mod tests {
 
         let just_inside = geo.split - 1e-4;
         let just_outside = geo.split + 1e-4;
-        assert!(main_lobe_branch(just_inside, &geo));
-        assert!(!main_lobe_branch(just_outside, &geo));
 
-        let a = pt(just_inside, geo.attach.0 + 0.5 * geo.d2, 1, 1);
-        let b = pt(just_outside, geo.attach.0 + 0.5 * geo.d2, 1, 1);
-        let (pa, _) = unified_with_normal(a.u1, a.u2, a.sheet.0, a.sheet.1, &geo, &morph);
-        let (pb, _) = unified_with_normal(b.u1, b.u2, b.sheet.0, b.sheet.1, &geo, &morph);
-        assert!(
-            is_seam(&a, &b, pa, pb, &geo),
-            "crossing the main-lobe/handle split must always flag as a seam"
-        );
+        for frac in [0.0f32, 0.5, 1.0] {
+            let u2 = geo.attach.0 + frac * geo.d2;
+            let a = pt(just_inside, u2, 1, 1);
+            let b = pt(just_outside, u2, 1, 1);
+            let (pa, _) = unified_with_normal(a.u1, a.u2, a.sheet.0, a.sheet.1, &geo, &morph);
+            let (pb, _) = unified_with_normal(b.u1, b.u2, b.sheet.0, b.sheet.1, &geo, &morph);
+            assert!(
+                !is_seam(&a, &b, pa, pb, &geo),
+                "a tiny step across the fixed split at u2={u2} should not flag as a seam"
+            );
+        }
     }
 }
 

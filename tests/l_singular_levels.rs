@@ -6,7 +6,7 @@
 use billiards::manifold::{build_manifold, Manifold, SampleConfig};
 use billiards::molecule::TransitionKind;
 use billiards::pseudo::{
-    classify_level, flat_morph, level_geometry, pinch_point_3d, sheets, unified_embed, Level,
+    classify_level, flat_morph, level_geometry, sheets, unified_embed, Level,
 };
 use billiards::table::Table;
 use billiards::torus::ConfocalParams;
@@ -176,8 +176,13 @@ fn morph_is_continuous_across_genus_jumps() {
             );
         }
 
-        // (b) On the genus side, the handle sits within a shrinking ball
-        // around the pinch point as λ → crit.
+        // (b) On the genus side, the handle sits within a shrinking distance
+        // of the main lobe's *own attach curve* as λ → crit — i.e. it
+        // flattens onto the surface it is glued to. It does NOT collapse onto
+        // one universal pinch point: at the α₁ jump the handle's *depth*
+        // (`d1`) vanishes while its attach band (`d2`) can still span a real
+        // range of `u2`, so different `q` genuinely sit at different points
+        // of the main lobe.
         let genus_side = |d: f32| if crit < 1.0 { crit + d } else { crit - d };
         let mut prev = f32::INFINITY;
         for d in [0.05f32, 0.01, 1e-3, 1e-4] {
@@ -185,7 +190,6 @@ fn morph_is_continuous_across_genus_jumps() {
             let level = classify_level(lam, &l_table(), &cf(), 1e-9, 1e-9);
             let g = level_geometry(&level);
             let m = flat_morph(&g, &l_table(), &cf(), lam);
-            let pp = pinch_point_3d(&g, &m).expect("genus side has a pinch");
             let mut maxd = 0.0f32;
             for p in [0.25f32, 0.75, 1.0] {
                 for q in [0.0f32, 0.5, 1.0] {
@@ -193,7 +197,10 @@ fn morph_is_continuous_across_genus_jumps() {
                     let u2 = g.attach.0 + q * g.d2;
                     for &(s1, s2) in &sheets() {
                         let pos = unified_embed(u1, u2, s1, s2, &g, &m);
-                        maxd = maxd.max((pos - pp).length());
+                        // The main lobe's own boundary point at this exact
+                        // u2/sheet — the curve the handle is glued to.
+                        let attach_pt = unified_embed(g.split, u2, s1, s2, &g, &m);
+                        maxd = maxd.max((pos - attach_pt).length());
                     }
                 }
             }
@@ -205,7 +212,7 @@ fn morph_is_continuous_across_genus_jumps() {
         }
         assert!(
             prev < 0.05,
-            "crit {crit}: handle must collapse onto the pinch (extent {prev})"
+            "crit {crit}: handle must collapse onto its attach curve (extent {prev})"
         );
     }
 }

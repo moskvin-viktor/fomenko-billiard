@@ -157,26 +157,38 @@ pub fn unified_with_normal(
         return (pos, n);
     }
 
-    // Handle: small torus tangent at the pinch point on the outer equator.
+    // Handle: small torus attached to the main lobe along the *whole* attach
+    // band, not at a single point.  `u1 = split` is not a wall for `u2` inside
+    // the attach band — it's the interior grid line separating spine and
+    // handle cells — so the embedding must agree exactly with the main lobe's
+    // boundary value there, for every `u2` in the band, or the lift of a
+    // physical trajectory crossing it renders as discontinuous.
+    //
+    // The attach curve `(r_major + r) · e_r(u2)` below is exactly the main
+    // lobe's own position at `lu1 = lsplit` (`ct = 1, st = 0` there — see the
+    // main-lobe branch), reusing the *same* `tm` angle (a function of the
+    // real `lu2`, not a band-average).  The tube offset is enveloped by
+    // `sin(π·p)`, which vanishes at `p = 0`, so the handle touches that curve
+    // with zero thickness right at the seam instead of leaving a `tube_r`-sized
+    // gap.
     let p = ((lu1 - lsplit) / g.d1).clamp(0.0, 1.0);
     let a_lo = g.attach.0 - g.origin.1;
     let q = ((lu2 - a_lo) / g.d2).clamp(0.0, 1.0);
     let psi = sg1 * PI * p; // loop angle (σ1 mirror closes the circle)
     let phi = sg2 * PI * q; // tube angle (σ2 mirror closes the circle)
 
-    // Pinch point P: outer-equator main-lobe point at the attach-band middle.
-    let tm = PI * (a_lo + 0.5 * g.d2) / h2;
+    let tm = sg2 * PI * (lu2 / h2); // same angle the main lobe uses at this u2
     let e_r = vec3(tm.cos(), tm.sin(), 0.0);
     let e_t = vec3(-tm.sin(), tm.cos(), 0.0);
     let e_z = vec3(0.0, 0.0, 1.0);
-    let pinch = (r_major + r) * e_r;
+    let attach_pt = (r_major + r) * e_r; // exact main-lobe boundary point
 
     let loop_r = HANDLE_LOOP * m.handle_t;
-    let tube_r = HANDLE_TUBE * m.handle_t * m.tube_collapse.max(0.05);
+    let tube_r = HANDLE_TUBE * m.handle_t * m.tube_collapse.max(0.05) * (PI * p).sin();
 
-    // Center loop through P: circle of radius loop_r around P + loop_r·e_r,
-    // in the (e_r, e_z) plane; ψ = 0 at P.
-    let center = pinch + loop_r * e_r;
+    // Center loop through the attach point: circle of radius loop_r around
+    // attach_pt + loop_r·e_r, in the (e_r, e_z) plane; ψ = 0 at attach_pt.
+    let center = attach_pt + loop_r * e_r;
     let radial = -psi.cos() * e_r + psi.sin() * e_z; // loop radial at ψ
     let n = phi.cos() * radial + phi.sin() * e_t;
     let pos = center + loop_r * radial + tube_r * n;
@@ -191,12 +203,14 @@ pub fn unified_embed(u1: f32, u2: f32, s1: i8, s2: i8, g: &LevelGeometry, m: &Fl
 /// The embedded pinch point (where the handle attaches / collapses), `None`
 /// for levels without a pinch.  Used to draw a bright singular marker when
 /// `handle_t` is small.
+///
+/// Uses the reflex corner's *actual* flat coordinate (`g.pinch`), not a
+/// band-average — the corner sits at one specific `u2`, not the middle of the
+/// attach band, and the two only coincide by accident.
 pub fn pinch_point_3d(g: &LevelGeometry, m: &FlatMorph) -> Option<Vec3> {
-    if g.pinch.is_empty() {
-        return None;
-    }
-    let a_lo = g.attach.0 - g.origin.1;
-    let tm = std::f32::consts::PI * (a_lo + 0.5 * g.d2) / g.u2_extent.max(1e-6);
+    let &(_, u2c) = g.pinch.first()?;
+    let lu2 = (u2c - g.origin.1).clamp(0.0, g.u2_extent.max(0.0));
+    let tm = std::f32::consts::PI * (lu2 / g.u2_extent.max(1e-6));
     let (r, r_major) = main_lobe_radii(m);
     Some(vec3(
         (r_major + r) * tm.cos(),
@@ -269,22 +283,49 @@ mod tests {
         assert!(mm.tube_collapse > 0.95, "mid: tube_collapse = {}", mm.tube_collapse);
     }
 
-    /// At handle_t → 0 every handle point sits at the pinch point.
+    /// At handle_t → 0, handle points collapse onto the *main lobe's own
+    /// boundary curve* at their `u2` (the handle flattens onto the surface it
+    /// is attached to) — not onto one universal pinch point, since a genus
+    /// jump at α₁ shrinks the handle's depth (`d1`) while its attach band
+    /// (`d2`) can still span a real range of `u2`.
     #[test]
-    fn test_handle_collapses_onto_pinch() {
+    fn test_handle_collapses_onto_attach_curve() {
         let (g, m) = morph_at(0.4001);
-        let pp = pinch_point_3d(&g, &m).expect("genus level has a pinch");
-        for p in [0.1f32, 0.5, 1.0] {
-            for q in [0.0f32, 0.5, 1.0] {
-                let u1 = g.split + p * g.d1;
-                let u2 = g.attach.0 + q * g.d2;
-                for &(s1, s2) in &super::super::render::sheets() {
-                    let pos = unified_embed(u1, u2, s1, s2, &g, &m);
-                    assert!(
-                        (pos - pp).length() < 0.05,
-                        "handle point {pos:?} far from pinch {pp:?}"
-                    );
-                }
+        for q in [0.0f32, 0.5, 1.0] {
+            let u1 = g.split + 0.5 * g.d1;
+            let u2 = g.attach.0 + q * g.d2;
+            for &(s1, s2) in &super::super::render::sheets() {
+                // Main lobe's own boundary point at this u2 and sheet — the
+                // curve the handle should be collapsing onto, not a fixed
+                // universal point.
+                let expected = unified_embed(g.split, u2, s1, s2, &g, &m);
+                let pos = unified_embed(u1, u2, s1, s2, &g, &m);
+                assert!(
+                    (pos - expected).length() < 0.05,
+                    "handle point {pos:?} far from its own attach curve {expected:?} at q={q}, sheet=({s1},{s2})"
+                );
+            }
+        }
+    }
+
+    /// The actual bug fix: `u1 = split` is not a wall for `u2` inside the
+    /// attach band, so the embedding must agree across it for every `u2` in
+    /// the band, not just at one averaged point.  Before the fix, the handle
+    /// side collapsed the whole band onto a single pinch, so this failed for
+    /// every `q` except the band's midpoint.
+    #[test]
+    fn test_handle_attaches_continuously_along_band() {
+        let (g, m) = morph_at(1.2); // mid-band genus-2: wide attach band
+        assert!(g.d2 > 0.05, "fixture needs a real attach band");
+        for frac in [0.0f32, 0.25, 0.5, 0.75, 1.0] {
+            let u2 = g.attach.0 + frac * g.d2;
+            for &(s1, s2) in &super::super::render::sheets() {
+                let a = unified_embed(g.split - 1e-4, u2, s1, s2, &g, &m);
+                let b = unified_embed(g.split + 1e-4, u2, s1, s2, &g, &m);
+                assert!(
+                    (a - b).length() < 1e-2,
+                    "seam gap at u2={u2} sheet=({s1},{s2}): {a:?} vs {b:?}"
+                );
             }
         }
     }
