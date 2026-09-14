@@ -230,6 +230,18 @@ pub fn caustic_starts(
     }
     let n = pts.len();
     if !inside.iter().any(|&x| x) {
+        // The caustic curve for `lam` never enters the table at all. For a
+        // table this can be a perfectly regular level: whenever `lam` lies
+        // beyond the table's own wall extent on this side (e.g. α₂ < λc < b
+        // for the standard L, between the reflex-corner jump and the
+        // separatrix — see `docs/confocal_L_pseudo_integrable.md` §7), the
+        // caustic sits *outside* the table, so trajectories at this λc never
+        // touch it — they simply bounce between two real walls, filling the
+        // *whole* remaining table. Fall back to seeding from the wall that
+        // actually bounds the region.
+        if let Some(t) = &table {
+            return table_wall_fallback_starts(t, structure, dom, lam, sampling, per_component);
+        }
         return vec![];
     }
 
@@ -388,9 +400,19 @@ pub fn critical_caustic_starts(
         None
     };
 
+    // An empty piece means the degenerate border doesn't actually reach this
+    // domain (e.g. a table built strictly inside one quadrant never touches
+    // the x-axis focal segment, so `Λ = b` is a perfectly *regular* level
+    // there — see `pseudo::table_touches_focal`) — not that the level is
+    // reachable-but-empty. `None` here (matching the documented contract
+    // above) lets the caller fall through to the ordinary caustic sampler,
+    // which for a table now finds the real trajectories via
+    // `table_wall_fallback_starts`; returning `Some(Vec::new())` used to
+    // short-circuit that fallback and looked like "no trajectories" even
+    // though the level classifies as a perfectly normal genus surface.
     let pts = piece?;
     if pts.is_empty() {
-        return Some(Vec::new());
+        return None;
     }
     Some(pts)
 }
@@ -462,4 +484,70 @@ fn snap_velocity(
         vec2(0.0, 1.0),
     );
     Some((q, vel))
+}
+
+/// Start points for a table domain when the caustic curve for `lam` doesn't
+/// reach into the table at all (see the call site in [`caustic_starts`]).
+///
+/// The wall that actually bounds the accessible region is the table's own
+/// outermost ellipse wall (`lam < b`) or innermost hyperbola wall (`lam >=
+/// b`) — a *real* domain arc, constant-λ along its whole length. Sample
+/// points on it (filtering the full boundary sample to that one λ value), and
+/// for each solve for the velocity directions that give the true `lam` via
+/// [`crate::phase3d::velocities_for_lambda`], keeping only the ones that
+/// point back into the table (a wall point has both inward and outward
+/// solutions; unlike the on-caustic case, this velocity is a genuine
+/// reflection, not a tangent).
+fn table_wall_fallback_starts(
+    t: &crate::table::Table,
+    structure: &ConfocalStructure,
+    dom: &domain::Domain,
+    lam: f32,
+    sampling: CausticSampling,
+    per_component: usize,
+) -> Vec<(Vec2, Vec2)> {
+    let cf = structure.cf;
+    let wall_lam = if lam < cf.b {
+        *t.ell.last().unwrap()
+    } else {
+        t.hyp[0]
+    };
+
+    // The whole boundary is a handful of constant-λ arcs; keep the samples
+    // that landed on this one.
+    let wall_pts: Vec<Vec2> = dom
+        .sample_boundary(2000)
+        .into_iter()
+        .filter(|&p| {
+            let (l1, l2) = crate::torus::confocal(p.x, p.y, &cf);
+            let lam_here = if lam < cf.b { l1 } else { l2 };
+            (lam_here - wall_lam).abs() < 1e-3
+        })
+        .collect();
+    if wall_pts.is_empty() {
+        return vec![];
+    }
+
+    let want = match sampling {
+        CausticSampling::Sparse => 1,
+        CausticSampling::Dense => per_component.max(1),
+    };
+    let step = (wall_pts.len() / want).max(1);
+
+    let mut starts = Vec::new();
+    for (i, &p) in wall_pts.iter().enumerate() {
+        if i % step != 0 {
+            continue;
+        }
+        for v in crate::phase3d::velocities_for_lambda(p, lam, cf.a, cf.b) {
+            let q = p + 1e-3 * v;
+            if t.contains(q.x, q.y, &cf) {
+                starts.push((p, v));
+            }
+        }
+        if sampling == CausticSampling::Sparse && !starts.is_empty() {
+            return starts;
+        }
+    }
+    starts
 }

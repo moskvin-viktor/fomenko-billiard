@@ -17,6 +17,49 @@ use crate::cached_render::CachedSurfaceRender;
 use crate::torus::{ConfocalParams, PhaseSample};
 use macroquad::prelude::*;
 
+/// Above this ratio of (embedded 3D jump) / (raw flat-chart step), a
+/// same-branch connecting line is a numerical artifact, not real motion —
+/// see [`is_seam`].
+///
+/// The main lobe's angular speed is `π / lsplit` (tube) or `π / u2_extent`
+/// (major), a per-*level* constant that is often well above 1 (e.g. `lsplit
+/// ≈ 0.23` on one observed genus-2 level gives speed ≈ 13.6) — so *legitimate*
+/// same-branch motion can already reach stretch ratios of ~10–20 on an
+/// ordinarily-proportioned level; that is not a seam, just a steep chart.
+/// Only right at a band end, where `u2_extent` (or `lsplit`) has shrunk
+/// toward zero, does the ratio blow up to the hundreds for a physically tiny
+/// step — measured ~270 at `u2_extent ≈ 0.013`. `100` sits with wide margin
+/// above the legitimate case and below the pathological one.
+const MAX_STRETCH_RATIO: f32 = 100.0;
+
+/// Whether the straight line between two temporally-adjacent trajectory
+/// samples' embedded positions would be a rendering artifact rather than a
+/// real traced path — either because it crosses the main-lobe/handle seam
+/// (a genuine discontinuity in [`unified_with_normal`]'s current embedding:
+/// the handle's cross-section at the split line is a small loop around one
+/// fixed pinch point, not the full arc the main lobe's boundary sweeps over
+/// the same attach band — so the two sides only coincide at isolated points),
+/// or because the embedded jump is wildly disproportionate to how far the
+/// samples actually moved in the flat chart (see [`MAX_STRETCH_RATIO`]).
+fn is_seam(a: &FlatPhasePoint, b: &FlatPhasePoint, pa: Vec3, pb: Vec3, geo: &LevelGeometry) -> bool {
+    if main_lobe_branch(a.u1, geo) != main_lobe_branch(b.u1, geo) {
+        return true;
+    }
+    let raw = ((a.u1 - b.u1).powi(2) + (a.u2 - b.u2).powi(2)).sqrt();
+    (pa - pb).length() > MAX_STRETCH_RATIO * raw.max(1e-6)
+}
+
+/// Which branch of [`unified_with_normal`] a raw `u1` falls on — mirrors its
+/// own branch test exactly (`d1`/`d2` absent ⇒ a torus level, main lobe only).
+fn main_lobe_branch(u1: f32, geo: &LevelGeometry) -> bool {
+    if geo.d1 <= 0.0 || geo.d2 <= 0.0 {
+        return true;
+    }
+    let lu1 = (u1 - geo.origin.0).clamp(0.0, geo.u1_extent.max(0.0));
+    let lsplit = (geo.split - geo.origin.0).max(1e-6);
+    lu1 <= lsplit + 1e-6
+}
+
 /// A phase-space point mapped into flat coordinates for rendering.
 #[derive(Clone, Copy, Debug)]
 pub struct FlatPhasePoint {
@@ -201,6 +244,13 @@ pub fn draw_flat(
             let b = win[1];
             let (pa, _na) = unified_with_normal(a.u1, a.u2, a.sheet.0, a.sheet.1, geo, morph);
             let (pb, _nb) = unified_with_normal(b.u1, b.u2, b.sheet.0, b.sheet.1, geo, morph);
+            if is_seam(&a, &b, pa, pb, geo) {
+                // The straight 3D line would cut through the surface's
+                // interior instead of tracing along it; drop the segment,
+                // not the points (the point cloud above already drew both
+                // ends).
+                continue;
+            }
             let sa = cam.project(pa, win_w, win_h);
             let sb = cam.project(pb, win_w, win_h);
             if sa.z < -0.1 || sb.z < -0.1 {
@@ -245,22 +295,25 @@ pub fn draw_flat_highlights(
         if traj.len() < 2 {
             continue;
         }
-        let projected: Vec<Vec3> = traj
+        let embedded: Vec<Vec3> = traj
             .iter()
-            .map(|pt| {
-                let p = unified_with_normal(pt.u1, pt.u2, pt.sheet.0, pt.sheet.1, geo, morph).0;
-                cam.project(p, win_w, win_h)
-            })
+            .map(|pt| unified_with_normal(pt.u1, pt.u2, pt.sheet.0, pt.sheet.1, geo, morph).0)
             .collect();
-        for win in projected.windows(2) {
-            let a = win[0];
-            let b = win[1];
-            if a.z < -0.1 || b.z < -0.1 {
+        for (win, pts) in embedded.windows(2).zip(traj.windows(2)) {
+            let (pa, pb) = (win[0], win[1]);
+            if is_seam(&pts[0], &pts[1], pa, pb, geo) {
+                // Seam — see the comment in `draw_flat`.
                 continue;
             }
-            draw_line(a.x, a.y, b.x, b.y, 4.0, RED);
+            let sa = cam.project(pa, win_w, win_h);
+            let sb = cam.project(pb, win_w, win_h);
+            if sa.z < -0.1 || sb.z < -0.1 {
+                continue;
+            }
+            draw_line(sa.x, sa.y, sb.x, sb.y, 4.0, RED);
         }
-        for s in &projected {
+        for &p in &embedded {
+            let s = cam.project(p, win_w, win_h);
             if s.z < -0.1 {
                 continue;
             }
@@ -407,6 +460,140 @@ impl FlatRender {
 impl Default for FlatRender {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pseudo::classify::classify_level;
+    use crate::pseudo::geometry::level_geometry;
+    use crate::pseudo::morph::flat_morph;
+    use crate::table::Table;
+
+    fn cf() -> ConfocalParams {
+        ConfocalParams::new(4.0, 1.0)
+    }
+
+    fn standard_l_table() -> Table {
+        Table::from_bounds(&[0.0, 0.4, 0.8], &[1.4, 2.0, 2.6], |l1, l2, _| {
+            let tall = l1 <= 0.4 && l2 >= 2.0;
+            let base = l1 <= 0.8 && l2 <= 2.0;
+            tall || base
+        })
+    }
+
+    fn pt(u1: f32, u2: f32, s1: i8, s2: i8) -> FlatPhasePoint {
+        FlatPhasePoint {
+            u1,
+            u2,
+            sheet: (s1, s2),
+            component: 0,
+        }
+    }
+
+    /// Regression for the "weird straight lines" bug: right next to a band
+    /// end (`u2_extent` near zero), even a tiny same-sheet step in raw
+    /// `(u1,u2)` must be flagged as a seam — proving the guard in
+    /// `draw_flat`/`draw_flat_highlights` is load-bearing there, not just
+    /// theoretical.
+    #[test]
+    fn test_near_death_step_is_a_seam() {
+        let tab = standard_l_table();
+        let lam = *tab.hyp.last().unwrap() - 1e-4;
+        let level = classify_level(lam, &tab, &cf(), 1e-9, 1e-9);
+        let geo = level_geometry(&level);
+        let morph = flat_morph(&geo, &tab, &cf(), lam);
+
+        let a = pt(0.1256, 0.0000, -1, 1);
+        let b = pt(0.1239, 0.0017, -1, 1);
+        let (pa, _) = unified_with_normal(a.u1, a.u2, a.sheet.0, a.sheet.1, &geo, &morph);
+        let (pb, _) = unified_with_normal(b.u1, b.u2, b.sheet.0, b.sheet.1, &geo, &morph);
+        assert!(
+            is_seam(&a, &b, pa, pb, &geo),
+            "a tiny same-sheet step near the death cap should still flag as a seam"
+        );
+    }
+
+    /// A healthy mid-band level's same-sheet steps must never flag, so the
+    /// guard never breaks a normal trajectory line into dotted fragments.
+    #[test]
+    fn test_mid_band_step_is_not_a_seam() {
+        let tab = standard_l_table();
+        let lam = 2.3f32;
+        let level = classify_level(lam, &tab, &cf(), 1e-9, 1e-9);
+        let geo = level_geometry(&level);
+        let morph = flat_morph(&geo, &tab, &cf(), lam);
+
+        let a = pt(0.10, 1.00, 1, 1);
+        let b = pt(0.101, 1.005, 1, 1);
+        let (pa, _) = unified_with_normal(a.u1, a.u2, a.sheet.0, a.sheet.1, &geo, &morph);
+        let (pb, _) = unified_with_normal(b.u1, b.u2, b.sheet.0, b.sheet.1, &geo, &morph);
+        assert!(
+            !is_seam(&a, &b, pa, pb, &geo),
+            "a tiny same-sheet step mid-band should not flag as a seam"
+        );
+    }
+
+    /// Regression for the "red trajectory disconnected / torus boundary
+    /// fractured" bug: on a genus-2 level with a narrow spine (`split` small
+    /// relative to `u2_extent`), the main lobe's own angular speed is high,
+    /// so normal same-branch per-sample motion can produce a large embedded
+    /// jump — that must NOT be treated as a seam (a fixed distance cutoff
+    /// wrongly flagged it; the ratio test doesn't, since the raw step is
+    /// proportionally just as large).
+    #[test]
+    fn test_steep_same_branch_motion_is_not_a_seam() {
+        let tab = standard_l_table();
+        let lam = 1.2f32;
+        let level = classify_level(lam, &tab, &cf(), 1e-9, 1e-9);
+        let geo = level_geometry(&level);
+        assert!(geo.split < 0.3, "fixture should have a narrow spine");
+        let morph = flat_morph(&geo, &tab, &cf(), lam);
+
+        // Mirrors a measured same-branch, same-sheet trajectory step at this
+        // level: raw Δu ≈ 0.076 in each axis, comfortably inside the spine.
+        let a = pt(0.0000, 1.0652, 1, 1);
+        let b = pt(0.0756, 1.1408, 1, 1);
+        assert!(main_lobe_branch(a.u1, &geo) && main_lobe_branch(b.u1, &geo));
+        let (pa, _) = unified_with_normal(a.u1, a.u2, a.sheet.0, a.sheet.1, &geo, &morph);
+        let (pb, _) = unified_with_normal(b.u1, b.u2, b.sheet.0, b.sheet.1, &geo, &morph);
+        assert!(
+            !is_seam(&a, &b, pa, pb, &geo),
+            "steep-but-legitimate same-branch motion should not flag as a seam"
+        );
+    }
+
+    /// A step that crosses the main-lobe/handle split must always flag as a
+    /// seam, regardless of how small the embedded jump happens to be — the
+    /// handle's cross-section at the split doesn't match the main lobe's
+    /// boundary arc (see `is_seam`'s docs), so the two sides can coincide by
+    /// chance without genuinely tracing the same path.
+    #[test]
+    fn test_branch_crossing_is_always_a_seam() {
+        let tab = standard_l_table();
+        let lam = 1.2f32;
+        let level = classify_level(lam, &tab, &cf(), 1e-9, 1e-9);
+        let geo = level_geometry(&level);
+        let morph = flat_morph(&geo, &tab, &cf(), lam);
+
+        let just_inside = geo.split - 1e-4;
+        let just_outside = geo.split + 1e-4;
+        assert!(main_lobe_branch(just_inside, &geo));
+        assert!(!main_lobe_branch(just_outside, &geo));
+
+        let a = pt(just_inside, geo.attach.0 + 0.5 * geo.d2, 1, 1);
+        let b = pt(just_outside, geo.attach.0 + 0.5 * geo.d2, 1, 1);
+        let (pa, _) = unified_with_normal(a.u1, a.u2, a.sheet.0, a.sheet.1, &geo, &morph);
+        let (pb, _) = unified_with_normal(b.u1, b.u2, b.sheet.0, b.sheet.1, &geo, &morph);
+        assert!(
+            is_seam(&a, &b, pa, pb, &geo),
+            "crossing the main-lobe/handle split must always flag as a seam"
+        );
     }
 }
 

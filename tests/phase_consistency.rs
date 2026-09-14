@@ -125,6 +125,20 @@ fn check_lambda_phase(preset: &Preset, lam: f32) {
     }
 
     // Phase manifold: dense torus sampling + boundary preimage, finite.
+    //
+    // A pseudo-integrable table (the L) never goes through this smooth
+    // `to_torus` machinery (`manifold::build_manifold` routes it through
+    // `Manifold::FlatSurface`/`pseudo::classify_level` instead — see
+    // `tests/pseudo_flat.rs` / `l_singular_levels.rs` for its own finiteness
+    // checks). `to_torus`'s bounds fall back to the full-ellipse convention
+    // for a table (`is_quadrilateral = false`), so probing it here at a λ
+    // that is a perfectly regular table level (e.g. Λ = b, which the table
+    // may not even touch — `pseudo::table_touches_focal`) just exercises the
+    // *unrelated* smooth separatrix sentinel, not a real bug in the table's
+    // own rendering path.
+    if table.is_some() {
+        return;
+    }
     let bounds = billiards::confocal::ConfocalStructure::of_domain(domain)
         .map(|s| s.torus_bounds())
         .unwrap_or((0.0, None));

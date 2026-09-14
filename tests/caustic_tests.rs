@@ -1,6 +1,28 @@
 use billiards::{domain, presets, torus::ConfocalParams};
 use macroquad::prelude::*;
 
+/// A start point is either genuinely on the caustic `Q_Λ = 0`, or — for a
+/// table domain whose caustic on this side doesn't reach the table's own
+/// wall extent (e.g. α₂ < λc < b for the standard L, see
+/// `confocal::table_wall_fallback_starts`) — on the real wall that bounds
+/// the accessible region instead.
+fn on_caustic_or_wall(p: Vec2, domain: &domain::Domain, cf: &ConfocalParams, lam: f32, q: f32) -> bool {
+    if q.abs() < 1e-3 {
+        return true;
+    }
+    let Some(t) = billiards::table::Table::from_domain(domain, cf) else {
+        return false;
+    };
+    let (l1, l2) = billiards::torus::confocal(p.x, p.y, cf);
+    let wall_lam = if lam < cf.b {
+        *t.ell.last().unwrap()
+    } else {
+        t.hyp[0]
+    };
+    let lam_here = if lam < cf.b { l1 } else { l2 };
+    (lam_here - wall_lam).abs() < 1e-2
+}
+
 /// Inside test that handles both quadrilaterals and complex shapes.
 /// Returns true if point is strictly inside the domain.
 fn point_inside(p: Vec2, domain: &domain::Domain) -> bool {
@@ -346,8 +368,8 @@ fn test_all_lambda_start_points() {
                 );
                 let q = billiards::quadratic::confocal(cf, lam).eval(p);
                 assert!(
-                    q.abs() < 1e-3,
-                    "{} | Λ={} | start {}: off caustic! Q={} pos=({}, {})",
+                    on_caustic_or_wall(p, domain, &cf, lam, q),
+                    "{} | Λ={} | start {}: off caustic and off wall! Q={} pos=({}, {})",
                     preset.label,
                     lam,
                     i,
@@ -376,8 +398,8 @@ fn test_all_lambda_start_points() {
                 );
                 let q = billiards::quadratic::confocal(cf, lam).eval(p);
                 assert!(
-                    q.abs() < 1e-3,
-                    "{} | Λ={} | start {}: off caustic! Q={} pos=({}, {})",
+                    on_caustic_or_wall(p, domain, &cf, lam, q),
+                    "{} | Λ={} | start {}: off caustic and off wall! Q={} pos=({}, {})",
                     preset.label,
                     lam,
                     i,

@@ -289,11 +289,17 @@ pub fn velocities_for_lambda(pos: Vec2, lam: f32, a: f32, b: f32) -> Vec<Vec2> {
 }
 
 /// Λ(θ) − lam for a unit velocity at angle θ.
+///
+/// Must match `torus::confocal::caustic` exactly (the canonical conserved
+/// quantity `Λ = b − L² + (a−b)vy²`, `L = x·vy − y·vx`) — an earlier version
+/// used a differently-normalized `vx²/a + vy²/b − L²/(ab)` (equal to
+/// `caustic()/a`, not `caustic()`), so it solved for `lam/a` instead of
+/// `lam` and silently returned no roots whenever the true target `lam`
+/// exceeded that scaled-down range.
 fn f_lam(th: f32, pos: Vec2, lam: f32, a: f32, b: f32) -> f32 {
     let (vx, vy) = (th.cos(), th.sin());
-    let x = pos.x;
-    let y = pos.y;
-    vx * vx / a + vy * vy / b - (x * vy - y * vx).powi(2) / (a * b) - lam
+    let l = pos.x * vy - pos.y * vx;
+    b - l * l + (a - b) * vy * vy - lam
 }
 
 /// A length scale for how much of the billiard the trajectory is allowed to
