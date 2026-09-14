@@ -11,11 +11,23 @@
 
 use super::classify::Level;
 use super::geometry::LevelGeometry;
-use super::map::to_flat;
+use super::map::{reflex_corners_in_flat, to_flat};
 use super::morph::{pinch_point_3d, unified_with_normal, FlatMorph};
 use crate::cached_render::CachedSurfaceRender;
 use crate::torus::{ConfocalParams, PhaseSample};
 use macroquad::prelude::*;
+
+/// How close (in flat `(u1,u2)` units) a sample may come to a reflex-corner
+/// image before the trajectory is terminated (see [`sample_flat_trajectory`]).
+/// A reflex corner is a 3-pronged singularity (doc §8 of
+/// `confocal_L_pseudo_integrable.md`): an orbit that reaches it has three
+/// equally valid continuations and no canonical choice, so the billiard
+/// reflection law silently picks one of them — the resulting direction can
+/// differ by `O(1)` from what a trajectory passing just on the other side of
+/// the corner would take. That is not a rendering artifact to smooth over;
+/// the orbit itself is undefined past this point, so it must stop instead of
+/// continuing through an arbitrary prong.
+const CORNER_EPS: f32 = 0.03;
 
 /// Above this ratio of (embedded 3D jump) / (raw flat-chart step), a
 /// same-branch connecting line is a numerical artifact, not real motion —
@@ -76,6 +88,7 @@ pub fn sample_flat_trajectory(
     level: &Level,
 ) -> Vec<FlatPhasePoint> {
     let cf = ConfocalParams::standard();
+    let corners = reflex_corners_in_flat(level);
     let mut pts = Vec::new();
     let mut p = p0;
     let mut v = v0;
@@ -94,6 +107,14 @@ pub fn sample_flat_trajectory(
             let q = p + (hit - p) * f;
             let sample = PhaseSample::new(q.x, q.y, v.x, v.y);
             if let Ok(flat) = to_flat(&sample, &cf, level) {
+                if near_reflex_corner(flat.u1, flat.u2, &corners) {
+                    // Approaching the 3-pronged singularity: no continuation
+                    // is canonical past this point (doc §8) — stop the whole
+                    // trajectory here rather than let the reflection law pick
+                    // an arbitrary prong and jump to an unrelated part of the
+                    // surface.
+                    return pts;
+                }
                 pts.push(FlatPhasePoint {
                     u1: flat.u1,
                     u2: flat.u2,
@@ -106,6 +127,14 @@ pub fn sample_flat_trajectory(
         p = hit + 1e-4 * v.normalize();
     }
     pts
+}
+
+/// Whether a flat sample sits within [`CORNER_EPS`] of any reflex-corner
+/// image of the level.
+fn near_reflex_corner(u1: f32, u2: f32, corners: &[(f32, f32)]) -> bool {
+    corners
+        .iter()
+        .any(|&(cu1, cu2)| ((u1 - cu1).powi(2) + (u2 - cu2).powi(2)).sqrt() < CORNER_EPS)
 }
 
 /// Sample the boundary preimage π⁻¹ of a pseudo-integrable level: the walls
@@ -585,6 +614,48 @@ mod tests {
                 "a tiny step across the fixed split at u2={u2} should not flag as a seam"
             );
         }
+    }
+
+    /// Regression for the reported jumps at some λc: an orbit aimed straight
+    /// at the reflex corner has no canonical continuation (doc §8, the
+    /// 3-pronged singularity), so it must be terminated there instead of
+    /// being silently reflected through one of the three prongs — which is
+    /// what was producing the discontinuities.
+    #[test]
+    fn test_trajectory_terminates_near_reflex_corner() {
+        let cf = ConfocalParams::standard();
+        let domain = crate::domain::confocal_lshape_standard(cf, 0.4, 0.8, 1.4, 2.0, 2.6);
+        // Segment 3 is the tall leg's inner ellipse arc, `a: reflex` — see
+        // `confocal_lshape_standard`'s doc comment.
+        let crate::domain::Segment::Quad { a: corner, .. } = domain.segments[3] else {
+            panic!("segment 3 should be the tall-leg arc starting at the reflex corner");
+        };
+        let normal = domain.segments[3].inward_normal(corner);
+
+        let tab = standard_l_table();
+        let lam = 1.2f32; // mid-band genus-2: reflex corner accessible
+        let level = classify_level(lam, &tab, &cf, 1e-9, 1e-9);
+
+        let p0 = corner + normal * 0.15;
+        let v0 = -normal; // aimed straight back at the corner
+
+        let pts = sample_flat_trajectory(&domain, p0, v0, 30, 20, &level);
+
+        let corners = reflex_corners_in_flat(&level);
+        assert!(!corners.is_empty(), "fixture level should have a reflex corner");
+        for pt in &pts {
+            assert!(
+                !near_reflex_corner(pt.u1, pt.u2, &corners),
+                "a sample was emitted within CORNER_EPS of the reflex corner: ({}, {})",
+                pt.u1,
+                pt.u2
+            );
+        }
+        assert!(
+            pts.len() < 30 * 20,
+            "trajectory aimed straight at the reflex corner should terminate before the step budget"
+        );
+        assert!(!pts.is_empty(), "should still record the approach up to the corner");
     }
 }
 
