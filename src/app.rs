@@ -184,21 +184,22 @@ impl ViewState {
                 }
             } else {
                 // Polyline domain: no confocal structure, no manifold table —
-                // dense-sample the single start point directly.
-                let bounds = (0.0, None);
+                // dense-sample the single start point directly. Uses the raw
+                // (position-angle, velocity-angle) embedding, not the
+                // confocal action-angle map: that map is only valid for
+                // points on the standard confocal ellipse family, and
+                // extrapolating it for an unrelated polygon like the square
+                // produces wild, unbounded θ₁/θ₂ (see
+                // `sample_trajectory_phase_raw`'s doc comment).
                 let dense_starts =
                     crate::get_start_points(second_int, domain, false, preset.start_center);
                 self.phase_trajectories = dense_starts
                     .iter()
-                    .map(|&(p, v)| {
-                        phase3d::sample_trajectory_phase_dense(domain, p, v, 200, 8, bounds)
-                    })
+                    .map(|&(p, v)| phase3d::sample_trajectory_phase_raw(domain, p, v, 200, 8))
                     .collect();
                 self.torus_highlights = start_points
                     .iter()
-                    .map(|&(p, v)| {
-                        phase3d::sample_trajectory_phase_dense(domain, p, v, 4, 8, bounds)
-                    })
+                    .map(|&(p, v)| phase3d::sample_trajectory_phase_raw(domain, p, v, 4, 8))
                     .filter(|t| !t.is_empty())
                     .collect();
             }

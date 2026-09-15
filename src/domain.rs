@@ -196,10 +196,15 @@ impl Domain {
         Self { segments }
     }
 
+    /// Every vertex of the (closed) boundary loop: segment `i`'s endpoint `b`
+    /// is the same point as segment `i+1`'s start `a`, wrapping around, so
+    /// this is exactly one corner per segment. (A `windows(2)` walk here
+    /// would silently drop the corner between the last and first segment —
+    /// see the same fix in `reflect`.)
     pub fn corners(&self) -> Vec<Vec2> {
         self.segments
-            .windows(2)
-            .map(|w| match &w[0] {
+            .iter()
+            .map(|seg| match seg {
                 Segment::Line { b, .. } => *b,
                 Segment::Quad { b, .. } => *b,
             })
@@ -241,23 +246,37 @@ impl Domain {
     }
 
     pub fn reflect(&self, p: Vec2, dir: Vec2, segment_idx: usize) -> Vec2 {
-        // π/2 corner handling
-        let corners: Vec<(Vec2, f32)> = self
-            .segments
-            .windows(2)
-            .map(|w| {
-                let corner = match &w[0] {
+        // π/2 corner handling. Pair segment `i` with segment `i+1` (wrapping
+        // around) so the vertex closing the loop — between the last and
+        // first segments — is included; a `windows(2)` walk drops it, which
+        // let a ball hitting a square's corner reflect off only one wall and
+        // exit through the other (e.g. `square()`'s (-1,-1), or
+        // `lshape_poly()`'s (0,0)).
+        let n = self.segments.len();
+        let corners: Vec<(Vec2, f32)> = (0..n)
+            .map(|i| {
+                let seg0 = &self.segments[i];
+                let seg1 = &self.segments[(i + 1) % n];
+                let corner = match seg0 {
                     Segment::Line { b, .. } => *b,
                     Segment::Quad { b, .. } => *b,
                 };
-                let n1 = w[0].inward_normal(corner);
-                let n2 = w[1].inward_normal(corner);
+                let n1 = seg0.inward_normal(corner);
+                let n2 = seg1.inward_normal(corner);
                 let angle = n1.angle_between(n2).abs();
                 (corner, angle)
             })
             .collect();
 
-        let eps = 1e-4;
+        // Tight on purpose: a genuine corner-aimed shot lands within ~1e-7 of
+        // the vertex (float roundoff only), but a generic trajectory that
+        // merely *passes near* a corner during an otherwise unrelated bounce
+        // can land within 1e-5–1e-4 of it too. `1e-4` used to treat that near
+        // miss as an exact hit and wrongly retro-reflect (`-dir`) instead of
+        // mirroring off the wall it actually struck, corrupting long traces
+        // at generic angles. `1e-6` sits comfortably above the genuine hit's
+        // float error and below the smallest observed near-miss.
+        let eps = 1e-6;
         for (corner, angle) in &corners {
             if p.distance(*corner) < eps {
                 if (*angle - std::f32::consts::PI / 2.0).abs() < 0.1 {

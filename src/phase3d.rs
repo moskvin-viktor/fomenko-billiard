@@ -215,6 +215,60 @@ pub fn sample_trajectory_phase_dense(
     pts
 }
 
+/// Sample a trajectory for a domain with **no confocal structure** (a plain
+/// polygon like the square or L-shape polyline).
+///
+/// [`sample_trajectory_phase_dense`] maps samples through the confocal
+/// action-angle machinery (`torus::to_torus`), which solves for confocal
+/// coordinates `(λ₁, λ₂)` and caustic root tables of the *standard confocal
+/// ellipse family*. That's only meaningful for points that actually lie
+/// inside that family's domain; called on a polygon (whose points/velocities
+/// bear no relation to that ellipse family) it can extrapolate the quadrature
+/// splines far outside their built range, producing huge or discontinuous
+/// `θ₁`/`θ₂` — seen as the 3D torus view's red trajectory occasionally
+/// shooting far off the torus in long straight jumps.
+///
+/// Instead, embed with angles that are well-defined for *any* domain: the
+/// position angle about the origin and the velocity direction angle. Both are
+/// always finite and periodic, so the donut embedding stays bounded.
+pub fn sample_trajectory_phase_raw(
+    domain: &crate::domain::Domain,
+    p0: Vec2,
+    v0: Vec2,
+    max_steps: usize,
+    per_seg: usize,
+) -> Vec<PhasePoint> {
+    let mut pts = Vec::new();
+    let mut p = p0;
+    let mut v = v0;
+    for _ in 0..max_steps {
+        let speed = v.length();
+        if speed < 1e-12 {
+            break;
+        }
+        let dir = v / speed;
+        let (_t, idx, hit) = match domain.intersect(p, dir) {
+            Some(r) => r,
+            None => break,
+        };
+        for k in 0..per_seg {
+            let f = k as f32 / per_seg as f32;
+            let q = p + (hit - p) * f;
+            pts.push(PhasePoint {
+                x: q.x,
+                y: q.y,
+                theta: v.y.atan2(v.x) / std::f32::consts::PI,
+                theta1: q.y.atan2(q.x),
+                theta2: v.y.atan2(v.x),
+                torus_index: 0,
+            });
+        }
+        v = domain.reflect(hit, v, idx);
+        p = hit + 1e-4 * v.normalize();
+    }
+    pts
+}
+
 /// Sample the full 4D phase space (x, y, vx, vy) along a trajectory,
 /// including interior points between bounces.
 ///
