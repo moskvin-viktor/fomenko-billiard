@@ -22,10 +22,6 @@ dynamical systems theory, built as a real 2D/3D billiard simulator:
   surface's topology bifurcates — which the app draws as a strip along the
   bottom of the screen, live, as you move the slider.
 
-**[Play it in your browser](https://moskvin-viktor.github.io/fomenko-billiard/)**
-— no install needed (once GitHub Pages is enabled for this repo, see
-[Web build](#web-build) below).
-
 The math behind all three is written up in [`docs/math/`](docs/math/README.md);
 this README covers running the app.
 
@@ -70,20 +66,6 @@ group: their 3D view is a raw `(x, y, θ/π)` embedding rather than a Liouville
 torus, so switching between them and the confocal presets makes it visible
 just how much the two extra structures (confocality, the second integral)
 buy you.
-
-## Web build
-
-The app compiles straight to `wasm32-unknown-unknown` via [macroquad](https://github.com/not-fl3/macroquad)'s
-own minimal JS loader (`web/mq_js_bundle.js`, vendored from the crate) — no
-`wasm-bindgen`, no bundler.
-
-```sh
-web/build.sh --serve   # builds web/billiards.wasm, serves on :8000
-```
-
-`.github/workflows/deploy-web.yml` rebuilds and redeploys it to GitHub Pages
-on every push to `main` that touches `src/`, `assets/`, or `web/`. One-time
-setup: repo Settings → Pages → Source → **GitHub Actions**.
 
 ## Documentation
 
