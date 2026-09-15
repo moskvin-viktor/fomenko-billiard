@@ -110,14 +110,19 @@ pub fn draw_strip(markers: &[LayerMarker], current_lam: f32, x: f32, y: f32, wid
     let sx = x + t * width;
     draw_line(sx, y - 18.0, sx, y + 18.0, 2.0, WHITE);
     draw_circle(sx, y, 6.0, WHITE);
+    // Skip "regular" — an ordinary reachable level, not a special layer — so
+    // this doesn't just duplicate the slider's own "Λ = …" readout right
+    // below it with a label that carries no information.
     if let Some(m) = nearest(markers, current_lam) {
-        draw_text(
-            &format!("Λ={:.3}  {}", current_lam, m.label),
-            sx + 8.0,
-            y + 30.0,
-            13.0,
-            color_u8!(230, 230, 245, 255),
-        );
+        if m.label != "regular" {
+            draw_text(
+                &format!("Λ={:.3}  {}", current_lam, m.label),
+                sx + 8.0,
+                y + 30.0,
+                13.0,
+                color_u8!(230, 230, 245, 255),
+            );
+        }
     }
 
     markers.len()

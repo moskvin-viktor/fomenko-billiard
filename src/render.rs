@@ -13,6 +13,10 @@ use macroquad::prelude::*;
 // ----------------------------------------------------------------
 // Camera (2D)
 // ----------------------------------------------------------------
+/// Fraction of the window height reserved at the bottom for the Λ slider and
+/// (when shown) the molecule strip, kept clear of the billiard drawing.
+const BOTTOM_UI_MARGIN: f32 = 0.2;
+
 pub struct Camera {
     centre: Vec2,
     half_height: f32,
@@ -53,9 +57,15 @@ impl Camera {
 
     #[inline(always)]
     pub fn world_to_screen(&self, p: Vec2, win_w: f32, win_h: f32) -> Vec2 {
-        let aspect = win_w / win_h;
+        // Reserve the bottom of the window for the slider / molecule strip so
+        // a vertically-dominant domain (e.g. the "Thin" confocal ellipse)
+        // never draws its own boundary into the UI band — the old mapping
+        // filled the *whole* window height, so a tall enough shape's
+        // boundary curve landed right on top of the Λ slider.
+        let usable_h = win_h * (1.0 - BOTTOM_UI_MARGIN);
+        let aspect = win_w / usable_h;
         let sx = ((p.x - self.centre.x) / (self.half_height * aspect) + 1.0) * 0.5 * win_w;
-        let sy = (-(p.y - self.centre.y) / self.half_height + 1.0) * 0.5 * win_h;
+        let sy = (-(p.y - self.centre.y) / self.half_height + 1.0) * 0.5 * usable_h;
         vec2(sx, sy)
     }
 }

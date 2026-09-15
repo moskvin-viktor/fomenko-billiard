@@ -617,7 +617,7 @@ impl App {
 
             if preset.is_confocal {
                 draw_text(
-                    "H = ½|v|²  |  Λ = vx²/a + vy²/b − (x·vy − y·vx)²/(ab)  |  v ⟂ ∇Q_Λ",
+                    "H = ½|v|²  |  Λ = vx²/a + vy²/b − (x·vy − y·vx)²/(ab)  |  v ⊥ ∇Q_Λ",
                     12.0,
                     h - 12.0,
                     14.0,
