@@ -234,7 +234,7 @@ pub fn caustic_starts(
         // table this can be a perfectly regular level: whenever `lam` lies
         // beyond the table's own wall extent on this side (e.g. α₂ < λc < b
         // for the standard L, between the reflex-corner jump and the
-        // separatrix — see `docs/confocal_L_pseudo_integrable.md` §7), the
+        // separatrix — see `docs/math/pseudo_integrable_genus.md` §7), the
         // caustic sits *outside* the table, so trajectories at this λc never
         // touch it — they simply bounce between two real walls, filling the
         // *whole* remaining table. Fall back to seeding from the wall that

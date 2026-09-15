@@ -1,7 +1,7 @@
 //! Un-normalized length coordinates `u(λ) = ∫ dλ/√P` for the pseudo-integrable
 //! flat model.
 //!
-//! This is the doc's `ULength` (§11 of `confocal_L_pseudo_integrable.md`): the
+//! This is the doc's `ULength` (§11 of `docs/math/pseudo_integrable_genus.md`): the
 //! `w`-integral of the torus doc *without* the `π/W` normalization, integrated
 //! on a grid uniform in `s = √(r − λ)` where `r` is the root of `P` nearest the
 //! interval.  That kills the inverse-square-root endpoint singularity when the

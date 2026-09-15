@@ -9,7 +9,7 @@
 //!
 //! and the phases are built from its Abelian differentials `dλ/√P` via the
 //! `Libration` quadrature tables.  This is a faithful port of the reference
-//! implementation in `docs/thorus_params.md`.
+//! implementation in `docs/math/liouville_tori.md`.
 
 use crate::torus::confocal::{caustic, confocal, lam_dots, nu_angle, ConfocalParams, PhaseSample};
 use crate::torus::quadrature::Libration;

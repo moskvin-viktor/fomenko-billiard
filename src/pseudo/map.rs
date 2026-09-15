@@ -1,7 +1,7 @@
 //! Per-sample mapping into flat coordinates for pseudo-integrable tables.
 //!
 //! This is the generalized `to_flat` of the doc (§11 of
-//! `confocal_L_pseudo_integrable.md`): map a phase-space sample `(x, y, vx, vy)`
+//! `docs/math/pseudo_integrable_genus.md`): map a phase-space sample `(x, y, vx, vy)`
 //! to `(u₁, u₂)` plus the sheet `(sign d₁, sign d₂)` and the fold quadrant
 //! `(sign x, sign y)`.
 

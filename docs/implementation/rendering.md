@@ -2,7 +2,7 @@
 
 This doc explains how the crate turns a confocal table with reflex (`3π/2`)
 corners into the objects the app actually draws.  The physics is in
-[`confocal_L_pseudo_integrable.md`](confocal_L_pseudo_integrable.md); here we
+[`pseudo_integrable_genus.md`](../math/pseudo_integrable_genus.md); here we
 walk the code path end to end — from the `Domain` to the pixels — and cover the
 two renderers (torus vs. genus-2) with the reasons each shape was chosen.
 

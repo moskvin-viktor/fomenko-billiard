@@ -12,7 +12,7 @@
 //!
 //! These tests pin that boundary against the *real* L preset (not a hand-built
 //! `Table`), asserting the two `λc` regimes and the bifurcation values from
-//! `docs/confocal_L_pseudo_integrable.md` §7.
+//! `docs/math/pseudo_integrable_genus.md` §7.
 
 use billiards::pseudo::classify_level;
 use billiards::table::Table;

@@ -12,7 +12,7 @@
 //! - [`render`] — 3D embeddings (torus angles, cross, double-torus pretzel).
 //! - [`view`] — flat-chart sampling and drawing for the 3D view.
 //!
-//! See `docs/pseudo_integrable.md` for the end-to-end pipeline.
+//! See `docs/implementation/rendering.md` for the end-to-end pipeline.
 
 pub mod classify;
 pub mod geometry;

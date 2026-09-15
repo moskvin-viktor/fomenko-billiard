@@ -1,12 +1,12 @@
 //! Level → Manifold: the single table `λ → renderable manifold`.
 //!
-//! Implements `docs/level_to_manifold.md`.  The app asks "what is the manifold
-//! at λ?" and gets back a flat object it can draw — a 2D torus point cloud, a
-//! closed 1D curve (one circle per collapsed torus), a flat pseudo-integrable
-//! surface, or nothing.  No cascade of if-else branches at the call site.
+//! The app asks "what is the manifold at λ?" and gets back a flat object it
+//! can draw — a 2D torus point cloud, a closed 1D curve (one circle per
+//! collapsed torus), a flat pseudo-integrable surface, or nothing.  No
+//! cascade of if-else branches at the call site.
 //!
-//! The key rule (see `docs/degenerate_embedding.md`): the shape of a degenerate
-//! layer is **read off the torus mapping**, never hardcoded.  Each sliding
+//! The key rule: the shape of a degenerate layer is **read off the torus
+//! mapping**, never hardcoded.  Each sliding
 //! start point is pushed through [`crate::torus::to_torus`]; at a degenerate
 //! level one torus angle collapses to a constant and the other circulates, so
 //! each torus degrades to a circle.  Circles are found by clustering the mapped

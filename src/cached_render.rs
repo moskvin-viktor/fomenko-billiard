@@ -7,9 +7,9 @@
 //! every other frame the same image is correct.  Re-rasterizing into an
 //! offscreen `RenderTarget` only on camera-move or geometry-change, and
 //! otherwise blitting the cached texture, was the fix for the ~150K-point
-//! torus orbit-freeze (`docs/known_issues.md` #1).  Factoring the cache out
-//! here means the L-shape path gets the identical fix instead of redrawing
-//! its full decimated cloud unconditionally every frame.
+//! torus orbit-freeze.  Factoring the cache out here means the L-shape path
+//! gets the identical fix instead of redrawing its full decimated cloud
+//! unconditionally every frame.
 
 use macroquad::prelude::*;
 

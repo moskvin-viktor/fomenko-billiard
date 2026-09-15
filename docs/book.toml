@@ -1,0 +1,30 @@
+[book]
+title = "Mathematical Billiards"
+description = "Dynamical billiards, the Liouville-Arnold theorem, and Fomenko's molecules — theory and implementation."
+authors = ["Viktor Moskvin"]
+language = "en"
+src = "."
+
+[build]
+build-dir = "book"
+
+# Renders the $...$ / $$...$$ LaTeX math already used throughout docs/math/.
+# `mdbook-katex` must be on PATH (`cargo install mdbook-katex`).
+[preprocessor.katex]
+after = ["links"]
+
+# Renders ```mermaid fenced code blocks (see implementation/architecture.md).
+# Run `mdbook-mermaid install docs` once after installing the preprocessor
+# (`cargo install mdbook-mermaid`) — it vendors mermaid.min.js/mermaid-init.js
+# into this directory and adds the matching [output.html] additional-js
+# entries below itself; nothing else to configure by hand.
+[preprocessor.mermaid]
+command = "mdbook-mermaid"
+
+[output.html]
+default-theme = "light"
+preferred-dark-theme = "navy"
+git-repository-url = "https://github.com/moskvin-viktor/fomenko-billiard"
+fold.enable = true
+fold.level = 1
+additional-js = ["mermaid.min.js", "mermaid-init.js"]

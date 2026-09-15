@@ -3,7 +3,7 @@
 //! Given a caustic value `λc` and a [`Table`], determine the topology of the
 //! accessible region and the flat moduli needed to map points into it.  This is
 //! the generalized version of the doc's `classify_level` (§11 of
-//! `confocal_L_pseudo_integrable.md`): instead of hardcoding the L-shape's
+//! `docs/math/pseudo_integrable_genus.md`): instead of hardcoding the L-shape's
 //! branching, it truncates the occupancy grid by the caustic, labels connected
 //! components, and counts surviving reflex corners per component.
 

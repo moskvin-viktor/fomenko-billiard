@@ -20,7 +20,7 @@ use macroquad::prelude::*;
 /// How close (in flat `(u1,u2)` units) a sample may come to a reflex-corner
 /// image before the trajectory is terminated (see [`sample_flat_trajectory`]).
 /// A reflex corner is a 3-pronged singularity (doc §8 of
-/// `confocal_L_pseudo_integrable.md`): an orbit that reaches it has three
+/// `docs/math/pseudo_integrable_genus.md`): an orbit that reaches it has three
 /// equally valid continuations and no canonical choice, so the billiard
 /// reflection law silently picks one of them — the resulting direction can
 /// differ by `O(1)` from what a trajectory passing just on the other side of
@@ -386,8 +386,8 @@ pub fn draw_flat_boundary(
 /// on the same [`CachedSurfaceRender`] the smooth-torus path uses
 /// (`torus_render::TorusRender`).  Before this, `draw_flat` was called
 /// directly every frame regardless of camera motion; the smooth path's
-/// "orbit freeze" fix (`docs/known_issues.md` #1) never covered the L-shape
-/// view.  This gives the two paths identical caching: rasterize only when the
+/// "orbit freeze" fix never covered the L-shape view.  This gives the two
+/// paths identical caching: rasterize only when the
 /// camera moved or the level's geometry/morph state changed, otherwise blit.
 pub struct FlatRender {
     cache: CachedSurfaceRender,

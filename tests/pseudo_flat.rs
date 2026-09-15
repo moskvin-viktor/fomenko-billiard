@@ -2,7 +2,7 @@
 //! level must land on the flat translation surface (flat L / unfolded cross),
 //! NOT on a donut `torus_embed`.
 //!
-//! The doc (`confocal_L_pseudo_integrable.md` §12) is explicit: a genus-2
+//! The doc (`docs/math/pseudo_integrable_genus.md` §12) is explicit: a genus-2
 //! surface has **no** flat torus picture — forcing it onto a donut is wrong and
 //! renders as a garbled shape.  The correct object is the flat surface with the
 //! `uᵢ = ∫ dλᵢ/√P` coordinates, where the flow has slope ±1 and the level set
