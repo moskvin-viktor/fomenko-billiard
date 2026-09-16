@@ -6,7 +6,7 @@ dynamical systems theory, built as a real 2D/3D billiard simulator:
 - **Dynamical billiards** — a point mass moves in a straight line inside a
   domain and reflects specularly off the boundary. Simple to state, rich in
   behavior: depending on the domain's shape the same rule produces motion
-  that ranges from completely predictable to ergodic.
+  that ranges from completely predictable to ergodic. 
 - **The Liouville–Arnold theorem** — for a billiard inside a confocal
   quadric (an ellipse or an ellipse-and-hyperbola quadrilateral), the motion
   conserves *two* independent integrals, not just one. Liouville's theorem
