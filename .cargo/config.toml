@@ -1,0 +1,8 @@
+# macroquad/miniquad's wasm target imports a bunch of JS-side functions
+# (init_webgl, glFlush, ...) that mq_js_bundle.js supplies at instantiation
+# time — they're meant to stay unresolved *imports* in the .wasm binary, not
+# link-time errors. Newer rust-lld defaults to erroring on any undefined
+# symbol for wasm32-unknown-unknown; --allow-undefined restores the old,
+# correct-for-this-case behavior.
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "link-args=--allow-undefined"]
