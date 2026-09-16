@@ -1,0 +1,100 @@
+name: Release
+
+# Builds native binaries (Linux, Windows, macOS) and the web/wasm bundle, and
+# attaches them all to the GitHub Release for the pushed tag.
+#
+# Cut a release with:
+#   git tag v0.1.0 && git push --tags
+# (bump the `version` in Cargo.toml to match first, so the crate and the
+# release agree on what "v0.1.0" means.)
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-native:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            bin: billiards
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bin: billiards.exe
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            bin: billiards
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package (unix)
+        if: runner.os != 'Windows'
+        run: |
+          tar czf billiards-${{ github.ref_name }}-${{ matrix.target }}.tar.gz \
+            -C target/${{ matrix.target }}/release ${{ matrix.bin }}
+
+      - name: Package (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Compress-Archive `
+            -Path target/${{ matrix.target }}/release/${{ matrix.bin }} `
+            -DestinationPath billiards-${{ github.ref_name }}-${{ matrix.target }}.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: billiards-${{ matrix.target }}
+          path: billiards-${{ github.ref_name }}-*
+          if-no-files-found: error
+
+  build-web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - run: cargo build --release --target wasm32-unknown-unknown
+
+      - name: Package
+        run: |
+          mkdir dist
+          cp web/index.html web/mq_js_bundle.js dist/
+          cp target/wasm32-unknown-unknown/release/billiards.wasm dist/
+          (cd dist && zip -r ../billiards-${{ github.ref_name }}-web.zip .)
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: billiards-web
+          path: billiards-${{ github.ref_name }}-web.zip
+          if-no-files-found: error
+
+  release:
+    needs: [build-native, build-web]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          generate_release_notes: true
